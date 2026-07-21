@@ -15,6 +15,11 @@
 - **内外网判定自洽**：`192.168.3.88` 是本机唯一外网入口（跳板机），guard 早已按外部攻击源检测，但邮件 `isExternalIP` 曾把它误判成「内网」。统一为按外部对待（新增 `DETECT_IP` 常量与之呼应）。
 - **Web 面板 `force-close` / `force-cancel` 语义去重**：原两份逻辑完全复制粘贴（都 disable + 设 blockedAt + 删 forceOpen 文件）。现 `force-cancel` 仅取消「强制开启」覆盖、不关端口、交还控制权给 guard；`force-close` 保留「手动关端口 5 分钟」。
 
+### 落地步骤（需管理员一次性执行）
+- 本仓库代码已就绪，但「杀掉旧的 0.0.0.0 Web 面板、重注册 SYSTEM 计划任务、启动新面板」需要管理员令牌，无法在非提权环境自动完成。
+- 以管理员身份运行 `apply-fix.bat`（或 `powershell -ExecutionPolicy Bypass -File .\wry-elevated-fix.ps1`）即可一键完成：终止旧面板 → 用 `D:\app\nodejs` 重注册 guard/Web看门狗/日报 三个任务 → 立即启动。结果写入 `C:\Users\jianh\Documents\wry-fix-result.log`。
+- `register-tasks.ps1` 已重写为全 ASCII（避免中文任务名在 GBK 代码页下乱码导致注册失败），任务名改为 `wry-rdp-guard` / `wry-rdp-web` / `wry-rdp-report`，统一 SYSTEM 主体、不再依赖 QClaw。
+
 ## v3.1 (2026-07-21)
 
 ### 安全加固
