@@ -12,12 +12,56 @@ const path = require('path');
 const os = require('os');
 const { execSync, exec } = require('child_process');
 
-const FORCE_OPEN_PASSWORD = process.env.RDP_GUARD_PASSWORD || '147369';  // ⚠️ 首次使用请修改！通过环境变量设置更安全
 const FORCE_OPEN_DURATION_MS = 5 * 60 * 1000;
-const FORCE_OPEN_FILE = os.homedir() + '\\Documents\\rdp_force_open.json';
-const STATE_FILE         = os.homedir() + '\\Documents\\rdp_guard_state.json';
-const LOG_FILE           = os.homedir() + '\\Documents\\rdp_block.log';
-const ATTACK_HISTORY_FILE = os.homedir() + '\\Documents\\rdp_attack_history.json';
+// 运行数据目录（SYSTEM 用户时回退到实际用户目录）
+function getDataDir() {
+    const homedir = os.homedir();
+    if (!homedir.toLowerCase().includes('system32')) {
+        return path.join(homedir, 'Documents');
+    }
+    const usersDir = 'C:\\Users';
+    try {
+        for (const name of fs.readdirSync(usersDir)) {
+            if (['Public', 'Default', 'Default User', 'All Users'].includes(name)) continue;
+            const docs = path.join(usersDir, name, 'Documents');
+            if (fs.existsSync(docs) && fs.statSync(docs).isDirectory()) {
+                return docs;
+            }
+        }
+    } catch (_) {}
+    return path.join(homedir, 'Documents');
+}
+const DATA_DIR = getDataDir();
+
+// 「强制开启」密码：优先环境变量 RDP_GUARD_PASSWORD；其次读 DATA_DIR 下的 rdp_guard_password.txt；
+// 都没有则首次启动随机生成并持久化到该文件（重启不变），仅记录一次到日志。
+const FORCE_OPEN_FILE = path.join(DATA_DIR, 'rdp_force_open.json');
+function resolveForceOpenPassword() {
+    if (process.env.RDP_GUARD_PASSWORD) return process.env.RDP_GUARD_PASSWORD;
+    const pwFile = path.join(DATA_DIR, 'rdp_guard_password.txt');
+    try {
+        if (fs.existsSync(pwFile)) {
+            const p = fs.readFileSync(pwFile, 'utf8').trim();
+            if (p) return p;
+        }
+    } catch (_) {}
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    let p = '';
+    for (let i = 0; i < 12; i++) p += chars[Math.floor(Math.random() * chars.length)];
+    try {
+        fs.writeFileSync(pwFile, p, { mode: 0o600 });
+        console.log('[SECURITY] 已生成随机「强制开启」密码并保存到 ' + pwFile + '（请妥善保存，进程重启不会改变）：' + p);
+    } catch (e) {
+        console.log('[SECURITY] 无法写入密码文件，使用临时随机密码（进程重启将变化）：' + p);
+    }
+    return p;
+}
+const FORCE_OPEN_PASSWORD = resolveForceOpenPassword();
+
+const STATE_FILE         = path.join(DATA_DIR, 'rdp_guard_state.json');
+const LOG_FILE           = path.join(DATA_DIR, 'rdp_block.log');
+const ATTACK_HISTORY_FILE = path.join(DATA_DIR, 'rdp_attack_history.json');
+const SNAPSHOT_FILE = path.join(DATA_DIR, 'rdp_snapshots.json');
 const HTML_FILE = __dirname + '\\wry-web.html';
 const PORT = 19888;
 const TZ = 'Asia/Shanghai';
@@ -38,13 +82,21 @@ function atomicWrite(filePath, data) {
     }
 }
 
+// 解码 PowerShell 输出（自动检测 UTF-16LE / UTF-8 / GB18030）
+function decodePsOutput(buf) {
+    if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) {
+        return new TextDecoder('utf-16le').decode(buf.subarray(2));
+    }
+    const asUtf8 = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+    try { JSON.parse(asUtf8.trim()); return asUtf8; } catch (_) {}
+    if (/[一-鿿]|True|False|Enabled|Disabled/i.test(asUtf8)) return asUtf8;
+    return new TextDecoder('gb18030', { fatal: false }).decode(buf);
+}
+
 function psRaw(cmd) {
     try {
         const buf = execSync(cmd, { encoding: 'buffer', timeout: 15000, windowsHide: true, shell: 'powershell.exe' });
-        if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) {
-            return new TextDecoder('utf-16le').decode(buf.subarray(2));
-        }
-        return new TextDecoder('gb18030', { fatal: false }).decode(buf);
+        return decodePsOutput(buf);
     } catch (_) { return ''; }
 }
 
@@ -53,13 +105,7 @@ function psAsync(cmd) {
     return new Promise((resolve) => {
         exec(cmd, { timeout: 15000, windowsHide: true, shell: 'powershell.exe', encoding: 'buffer' }, (err, stdout) => {
             if (err || !stdout) { resolve(''); return; }
-            try {
-                if (stdout.length >= 2 && stdout[0] === 0xFF && stdout[1] === 0xFE) {
-                    resolve(new TextDecoder('utf-16le').decode(stdout.subarray(2)));
-                } else {
-                    resolve(new TextDecoder('gb18030', { fatal: false }).decode(stdout));
-                }
-            } catch (_) { resolve(''); }
+            try { resolve(decodePsOutput(stdout)); } catch (_) { resolve(''); }
         });
     });
 }
@@ -83,14 +129,22 @@ function getRDPClosedCount() {
 }
 
 function enableRDPRules() {
+    // 尝试启用原有规则
     const out = psRaw(
         'Get-NetFirewallRule -Group \'@FirewallAPI.dll,-28752\' -Direction Inbound -Action Allow -Enabled False | Enable-NetFirewallRule; ' +
-        'Get-NetFirewallRule -Group \'@FirewallAPI.dll,-28752\' -Direction Inbound -Action Allow -Enabled False | Measure-Object | Select-Object -ExpandProperty Count'
+        'Get-NetFirewallRule -Group \'@FirewallAPI.dll,-28752\' -Direction Inbound -Action Allow -Enabled True | Measure-Object | Select-Object -ExpandProperty Count'
     );
+    let enabledCount = 0;
     try {
         const lines = out.trim().split('\n');
-        return parseInt(lines[lines.length - 1].trim(), 10) || 0;
-    } catch (_) { return 0; }
+        enabledCount = parseInt(lines[lines.length - 1].trim(), 10) || 0;
+    } catch (_) {}
+    // 如果没有规则成功启用，创建兜底规则
+    if (enabledCount === 0) {
+        psRaw("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'");
+        enabledCount = 1;
+    }
+    return enabledCount;
 }
 
 function disableRDPRules() {
@@ -132,12 +186,55 @@ function getRecentLogs() {
     } catch (_) { return []; }
 }
 
+// 健康检查：防火墙状态、guard 运行状态
+function getHealth() {
+    const warnings = [];
+
+    // 1. 检查 Windows 防火墙是否启用（当前网络配置文件）
+    const fwOut = psRaw('Get-NetFirewallProfile | Where-Object { $_.Enabled -eq $false } | Select-Object -ExpandProperty Name');
+    if (fwOut && fwOut.trim()) {
+        const disabled = fwOut.trim().split('\n').map(s => s.trim()).filter(Boolean);
+        if (disabled.length > 0) {
+            warnings.push({ level: 'critical', msg: 'Windows 防火墙已关闭: ' + disabled.join(', ') + '。防护规则无效，RDP 端口完全裸露！' });
+        }
+    }
+
+    // 2. 检查 guard 快照是否最近（5 分钟内有更新说明 guard 在运行）
+    try {
+        const snapshots = readJson(SNAPSHOT_FILE, []);
+        if (snapshots.length > 0) {
+            const last = snapshots[snapshots.length - 1];
+            const age = (Date.now() - last.ts) / 1000;
+            if (age > 300) {
+                warnings.push({ level: 'warning', msg: `Guard 超过 ${Math.floor(age/60)} 分钟未更新快照，可能未正常运行` });
+            }
+        } else {
+            warnings.push({ level: 'warning', msg: '无 Guard 快照数据，可能从未运行过' });
+        }
+    } catch (_) {}
+
+    // 3. 检查 RDP 端口是否在监听
+    try {
+        const netstat = psRaw('Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count');
+        const listenCount = parseInt(netstat.trim(), 10) || 0;
+        const status = cache.status;
+        if (status && status.status === 'BLOCKED' && listenCount > 0) {
+            warnings.push({ level: 'warning', msg: '状态显示已封禁，但 RDP 端口仍在监听' });
+        }
+    } catch (_) {}
+
+    return { ok: warnings.length === 0, warnings };
+}
+
 function getHistory() {
     const history = readJson(ATTACK_HISTORY_FILE, []);
     return history.slice(-30).reverse().map(h => ({
+        ts: h.ts,
         time: h.time,
         total: h.total,
-        topIPs: Object.entries(h.ipCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 3)
+        ipCounts: h.ipCounts || {},
+        userCounts: h.userCounts || {},
+        statusCounts: h.statusCounts || {},
     }));
 }
 
@@ -178,7 +275,7 @@ function loadHtml() {
 let forceOpenInProgress = false;
 
 // ===== 后台缓存：异步采集，HTTP 请求零延迟 =====
-const cache = { status: null, logs: [], history: [], forceOpen: null, ts: 0 };
+const cache = { status: null, logs: [], history: [], forceOpen: null, health: { ok: true, warnings: [] }, ts: 0 };
 const CACHE_INTERVAL = 15000;  // 15秒刷新
 
 async function refreshStatusAsync() {
@@ -215,6 +312,7 @@ async function refreshStatusAsync() {
     } catch (_) {}
     try { cache.logs = getRecentLogs(); } catch (_) {}
     try { cache.history = getHistory(); } catch (_) {}
+    try { cache.health = getHealth(); } catch (_) {}
     cache.ts = Date.now();
 }
 
@@ -248,7 +346,7 @@ const server = http.createServer((req, res) => {
 
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
         // 将初始缓存数据注入 <body> 最前，转义 </ 防止提前关闭 script 标签
-        const preload = JSON.stringify({ s: cache.status, h: cache.history, l: cache.logs })
+        const preload = JSON.stringify({ s: cache.status, h: cache.history, l: cache.logs, health: cache.health })
             .replace(RegExp('</','g'), '<\\/');  // 防止 </script> 等标签误关闭
         const html = loadHtml().replace('<body>', '<body><script>window.__PRELOAD__=' + preload + ';</script>');
         res.writeHead(200, {
@@ -348,10 +446,11 @@ const server = http.createServer((req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/logs') { sendJson(cache.logs); return; }
     if (req.method === 'GET' && url.pathname === '/api/log')  { sendJson(cache.logs); return; }
     if (req.method === 'GET' && url.pathname === '/api/history') { sendJson(cache.history); return; }
+    if (req.method === 'GET' && url.pathname === '/api/health') { sendJson(cache.health || { ok: true, warnings: [] }); return; }
 
     res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' }));
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-    console.log('\uD83D\uDEE1 wry\u5408\u91D1\u9632\u62A4 Web \u76D1\u63A7\u5DF2\u542F\u52A8: http://127.0.0.1:' + PORT);
+    console.log('\uD83D\uDEE1 wry\u5408\u91D1\u9632\u62A4 Web \u76D1\u63A7\u5DF2\u542F\u52A8: http://127.0.0.1:' + PORT + '（仅本机可访问）');
 });

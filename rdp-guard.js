@@ -42,14 +42,37 @@ const PRIVATE_RANGES = [
 ];
 const DETECT_IP = '192.168.3.88';   // 跳板机 IP，参与检测和封禁
 
+// 运行数据目录（SYSTEM 用户时回退到实际用户目录）
+function getDataDir() {
+    const homedir = os.homedir();
+    // 非 SYSTEM 用户直接用 homedir/Documents
+    if (!homedir.toLowerCase().includes('system32')) {
+        return path.join(homedir, 'Documents');
+    }
+    // SYSTEM 用户：找第一个有 Documents 的用户目录
+    const usersDir = 'C:\\Users';
+    try {
+        for (const name of fs.readdirSync(usersDir)) {
+            if (['Public', 'Default', 'Default User', 'All Users'].includes(name)) continue;
+            const docs = path.join(usersDir, name, 'Documents');
+            if (fs.existsSync(docs) && fs.statSync(docs).isDirectory()) {
+                return docs;
+            }
+        }
+    } catch (_) {}
+    // 兜底
+    return path.join(homedir, 'Documents');
+}
+const DATA_DIR = getDataDir();
+
 // 文件路径
-const LOG_FILE           = path.join(os.homedir(), 'Documents', 'rdp_block.log');
-const STATE_FILE         = path.join(os.homedir(), 'Documents', 'rdp_guard_state.json');
-const LOCK_FILE          = path.join(os.homedir(), 'Documents', 'rdp_guard.lock');
-const FORCE_OPEN_FILE    = path.join(os.homedir(), 'Documents', 'rdp_force_open.json');
-const ATTACK_HISTORY_FILE = path.join(os.homedir(), 'Documents', 'rdp_attack_history.json');
-const SNAPSHOT_FILE      = path.join(os.homedir(), 'Documents', 'rdp_snapshots.json');
-const BACKFILL_DONE_FILE  = path.join(os.homedir(), 'Documents', 'rdp_guard_backfill.lock');
+const LOG_FILE           = path.join(DATA_DIR, 'rdp_block.log');
+const STATE_FILE         = path.join(DATA_DIR, 'rdp_guard_state.json');
+const LOCK_FILE          = path.join(DATA_DIR, 'rdp_guard.lock');
+const FORCE_OPEN_FILE    = path.join(DATA_DIR, 'rdp_force_open.json');
+const ATTACK_HISTORY_FILE = path.join(DATA_DIR, 'rdp_attack_history.json');
+const SNAPSHOT_FILE      = path.join(DATA_DIR, 'rdp_snapshots.json');
+const BACKFILL_DONE_FILE  = path.join(DATA_DIR, 'rdp_guard_backfill.lock');
 
 // ============================================================================
 // 工具函数
@@ -111,6 +134,22 @@ const EXCLUSIVE_LOCK = LOCK_FILE + '.acquired';
 
 function tryAcquireLock() {
     try {
+        // 检查是否有残留锁（进程异常退出未清理）
+        if (fs.existsSync(EXCLUSIVE_LOCK)) {
+            try {
+                const content = fs.readFileSync(EXCLUSIVE_LOCK, 'utf8').trim();
+                const pid = parseInt(content, 10);
+                if (pid && Number.isFinite(pid)) {
+                    process.kill(pid, 0); // 探测进程是否存活
+                    // 进程还在，锁有效
+                    return false;
+                }
+            } catch (_) {}
+            // 进程已死，清理残留锁
+            try { fs.unlinkSync(EXCLUSIVE_LOCK); } catch (_) {}
+            writeLog('[WARN] 清理残留锁文件，之前持有锁的进程已退出');
+        }
+        // 创建新锁
         fs.writeFileSync(EXCLUSIVE_LOCK, String(process.pid), { flag: 'wx' });
         return true;
     } catch (_) {
@@ -126,7 +165,7 @@ function releaseExclusiveLock() {
 // 持久化
 // ============================================================================
 
-function persistAttack(total, ipCounts) {
+function persistAttack(total, ipCounts, userCounts, statusCounts) {
     try {
         let history = safeReadJson(ATTACK_HISTORY_FILE, []);
         const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
@@ -139,6 +178,8 @@ function persistAttack(total, ipCounts) {
                 time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
                 total,
                 ipCounts,
+                userCounts: userCounts || {},
+                statusCounts: statusCounts || {},
             });
             atomicWrite(ATTACK_HISTORY_FILE, JSON.stringify(history, null, 2));
         }
@@ -226,12 +267,24 @@ function disableRDPRules() {
 }
 
 // 启用所有 RDP 入站允许规则（开启端口）
+// 如果原有规则被系统保护无法启用，自动创建兜底规则
 function enableRDPRules() {
     const rules = getRDPRules(false);
     let count = 0;
     for (const r of rules) {
-        ps(`Enable-NetFirewallRule -Name '${r.Name}'`);
-        writeLog(`已恢复 RDP 规则: ${r.DisplayName || r.Name}`);
+        const result = ps(`Enable-NetFirewallRule -Name '${r.Name}'`);
+        if (result && result.includes('拒绝访问')) {
+            writeLog(`[WARN] 无法启用规则 ${r.Name}（权限不足），将使用兜底规则`);
+        } else {
+            writeLog(`已恢复 RDP 规则: ${r.DisplayName || r.Name}`);
+            count++;
+        }
+    }
+    // 验证：确认至少有一条 RDP 规则处于启用状态
+    const openCount = getRDPRules(true).length;
+    if (openCount === 0) {
+        writeLog('[WARN] 所有 RDP 规则均无法启用，创建兜底规则');
+        ps(`New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'`);
         count++;
     }
     return count;
@@ -251,14 +304,32 @@ function isRDPOpen() {
 function getRecentFailures(seconds) {
     const since = new Date(Date.now() - seconds * 1000).toISOString();
     try {
-        const buf = execSync(
-            `wevtutil qe Security /f:text /q:"*[System[EventID=4625]]" /c:500 /rd:true`,
-            { encoding: 'buffer', maxBuffer: 100 * 1024 * 1024, windowsHide: true }
-        );
-        const text = new TextDecoder('gb18030', { fatal: false }).decode(buf);
+        // 优先用 wevtutil，失败时回退到 PowerShell Get-WinEvent
+        let text;
+        try {
+            const buf = execSync(
+                `wevtutil qe Security /f:text /q:"*[System[EventID=4625]]" /c:500 /rd:true`,
+                { encoding: 'buffer', maxBuffer: 100 * 1024 * 1024, windowsHide: true }
+            );
+            text = new TextDecoder('gb18030', { fatal: false }).decode(buf);
+        } catch (wevtErr) {
+            // wevtutil 失败，尝试 PowerShell Get-WinEvent
+            writeLog(`[WARN] wevtutil 失败，回退到 Get-WinEvent: ${wevtErr.message.substring(0, 200)}`);
+            try {
+                text = execSync(
+                    `powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625} -MaxEvents 500 | ForEach-Object { $e=$_; 'Event[0]'; '  Date: ' + $e.TimeCreated.ToString('o'); '  源网络地址: ' + $e.Properties[19].Value; '  登录失败的帐户:'; '    帐户名: ' + $e.Properties[5].Value; '  子状态: 0x' + $e.Properties[24].Value.ToString('X8') }"`,
+                    { encoding: 'utf8', maxBuffer: 100 * 1024 * 1024, windowsHide: true, timeout: 20000 }
+                );
+            } catch (psErr) {
+                writeLog(`[ERROR] Get-WinEvent 也失败: ${psErr.message.substring(0, 200)}`);
+                return { total: 0, ipCounts: {}, userCounts: {}, statusCounts: {} };
+            }
+        }
         const blocks = text.split(/^Event\[\d+\]\s*$/m).filter(b => b.trim());
 
         const ipCounts = {};
+        const userCounts = {};
+        const statusCounts = {};
         let total = 0;
 
         for (const b of blocks) {
@@ -271,15 +342,24 @@ function getRecentFailures(seconds) {
             if (!m || !m[1] || m[1] === '-' || m[1] === '127.0.0.1' || m[1] === '::1') continue;
 
             const ip = m[1];
-            // 跳过放行内网 IP（192.168.3.88 不跳过，参与检测）
             if (isPrivateIP(ip)) continue;
 
             total++;
             ipCounts[ip] = (ipCounts[ip] || 0) + 1;
+
+            // 提取用户名
+            const um = b.match(/登录失败的帐户:[\s\S]*?帐户名:\s*(\S+)/) ||
+                       b.match(/Account For Which Logon Failed:[\s\S]*?Account Name:\s*(\S+)/);
+            if (um && um[1] && um[1] !== '-') userCounts[um[1]] = (userCounts[um[1]] || 0) + 1;
+
+            // 提取状态码
+            const sm = b.match(/子状态:\s*(0x[0-9A-Fa-f]+)/) || b.match(/Sub Status:\s*(0x[0-9A-Fa-f]+)/);
+            if (sm) statusCounts[sm[1]] = (statusCounts[sm[1]] || 0) + 1;
         }
-        return { total, ipCounts };
+        return { total, ipCounts, userCounts, statusCounts };
     } catch (e) {
-        return { total: 0, ipCounts: {} };
+        writeLog(`[ERROR] getRecentFailures 失败: ${e.message}`);
+        return { total: 0, ipCounts: {}, userCounts: {}, statusCounts: {} };
     }
 }
 
@@ -352,11 +432,15 @@ async function main() {
         }
 
         // ---- 正常状态：检测攻击 ----
-        const { total, ipCounts } = getRecentFailures(LOOKBACK_SECONDS);
+        const { total, ipCounts, userCounts, statusCounts } = getRecentFailures(LOOKBACK_SECONDS);
         persistSnapshot(total, ipCounts);
 
-        // 无攻击
+        // 无攻击：确保 RDP 端口是开启的
         if (total === 0) {
+            if (!isRDPOpen()) {
+                const count = enableRDPRules();
+                writeLog(`无攻击事件，RDP 端口未开启，已自动恢复（${count} 条规则）`);
+            }
             unlock(); process.exit(0);
         }
 
@@ -380,7 +464,7 @@ async function main() {
         writeLog(`⚠️ 检测到暴力破解！最近${LOOKBACK_SECONDS}秒内 ${total} 次失败，` +
             `攻击 IP: ${triggeredIPs.join(', ')}，关闭 RDP 端口`);
 
-        persistAttack(total, ipCounts);
+        persistAttack(total, ipCounts, userCounts, statusCounts);
 
         // 禁用所有 RDP 入站规则
         const disabledCount = disableRDPRules();

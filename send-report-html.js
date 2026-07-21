@@ -12,15 +12,23 @@ const path = require('path');
 const ATTACK_HISTORY_FILE = os.homedir() + '\\Documents\\rdp_attack_history.json';
 const SNAPSHOT_FILE = os.homedir() + '\\Documents\\rdp_snapshots.json';
 
-// ============= 配置区（敏感信息通过环境变量设置）=============
-const SMTP_HOST = 'smtp.yeah.net';
-const SMTP_PORT = 465;
-const SMTP_SECURE = true;
-const SMTP_USER = process.env.SMTP_USER || 'jianhx_claw@yeah.net';
-const SMTP_PASS = process.env.SMTP_PASS || '';
-const FROM_EMAIL = SMTP_USER;
-const FROM_NAME = 'wry合金防护';
-const TO_EMAIL = process.env.REPORT_TO_EMAIL || 'jianhx189@163.com';
+// ============= 配置区（敏感信息通过环境变量 / rdp_guard_mail.json 设置）=============
+// 读取顺序：环境变量 > rdp_guard_mail.json（DATA_DIR 下）> 内置默认值
+const MAIL_CFG_FILE = os.homedir() + '\\Documents\\rdp_guard_mail.json';
+function loadMailConfig() {
+    let file = {};
+    try { file = JSON.parse(fs.readFileSync(MAIL_CFG_FILE, 'utf8')); } catch (_) {}
+    const secureRaw = process.env.SMTP_SECURE !== undefined ? process.env.SMTP_SECURE
+                    : (file.secure !== undefined ? file.secure : true);
+    return {
+        host:   process.env.SMTP_HOST  || file.host  || 'smtp.yeah.net',
+        port:   parseInt(process.env.SMTP_PORT || file.port || '465', 10),
+        secure: (secureRaw === true || secureRaw === 'true' || secureRaw === 1),
+        user:   process.env.SMTP_USER  || file.user  || 'jianhx_claw@yeah.net',
+        pass:   process.env.SMTP_PASS  || file.pass  || '',
+        to:     process.env.REPORT_TO_EMAIL || file.to || 'jianhx189@163.com',
+    };
+}
 // ==================================
 
 // 决定报告覆盖哪半天
@@ -499,26 +507,64 @@ ${logRows}
 </div>
 </body></html>`;
 
-async function sendEmail(htmlBody) {
-    if (!SMTP_PASS) {
-        console.error('❌ SMTP_PASS 环境变量未设置，无法发送邮件');
-        process.exit(1);
+async function sendEmail(htmlBody, subject) {
+    const cfg = loadMailConfig();
+    if (!cfg.pass) {
+        console.warn('⚠ 未配置 SMTP 密码（环境变量 SMTP_PASS 或 ' + MAIL_CFG_FILE + ' 的 pass 字段），跳过本次邮件。防护仍在正常运行。');
+        process.exit(0);
     }
     const transporter = nodemailer.createTransport({
-        host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_SECURE,
-        auth: { user: SMTP_USER, pass: SMTP_PASS }
+        host: cfg.host, port: cfg.port, secure: cfg.secure,
+        auth: { user: cfg.user, pass: cfg.pass }
     });
     return await transporter.sendMail({
-        from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
-        to: TO_EMAIL,
-        subject: `🛡️ wry合金防护 ${dateStr} ${data.periodLabel} — ${winFailTotal}次失败 · ${threatLabel}`,
+        from: `"wry合金防护" <${cfg.user}>`,
+        to: cfg.to,
+        subject,
         html: htmlBody
     });
 }
 
+// 无威胁时的简短「安全通报」（降低噪音，保留每日心跳）
+function buildClearEmail() {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#e9ecf1;font-family:-apple-system,'Microsoft YaHei',sans-serif;">
+<div style="max-width:520px;margin:0 auto;padding:28px 16px;">
+<div style="background:linear-gradient(135deg,#0f1e3d,#234e8a);border-radius:18px;padding:32px 36px;color:white;">
+<div style="font-size:30px;">🛡️</div>
+<div style="font-size:20px;font-weight:800;margin-top:8px;letter-spacing:1px;">wry合金防护 · 安全通报</div>
+<div style="color:rgba(255,255,255,0.65);font-size:13px;margin-top:4px;">${escapeHtml(hostname)} · ${dateStr} ${data.periodLabel}</div>
+</div>
+<div style="background:white;border-radius:0 0 18px 18px;padding:28px 36px;">
+<div style="display:flex;align-items:center;gap:10px;color:#27ae60;font-weight:700;font-size:16px;">✅ 本时段无异常</div>
+<div style="color:#5a6c7d;font-size:14px;line-height:1.7;margin-top:14px;">
+统计窗口：${windowStartStr} → ${windowEndStr}<br>
+失败登录次数：<strong style="color:#2c3e50;">0</strong><br>
+当前封禁 IP：<strong style="color:#2c3e50;">0</strong><br>
+防护状态：<strong style="color:#27ae60;">待命 · RDP 正常</strong>
+</div>
+<div style="margin-top:18px;padding:14px 16px;background:#f0fff4;border-left:4px solid #27ae60;border-radius:8px;font-size:13px;color:#2a6b3a;">
+系统持续每分钟监控 RDP 失败登录（阈值 3 次/60 秒），无需人工干预。下次通报：08:00 / 20:00。
+</div>
+</div>
+<div style="text-align:center;color:#94a0b8;font-size:11px;padding:16px;">${nowStr} · 自动生成</div>
+</div>
+</body></html>`;
+}
+
 (async () => {
     try {
-        const info = await sendEmail(html);
+        const noThreat = winFailTotal === 0 && blockedIPs.length === 0 && !guardActive;
+        let body, subject;
+        if (noThreat) {
+            subject = `🛡️ wry合金防护 安全通报 ${dateStr} ${data.periodLabel} — 本时段无异常`;
+            body = buildClearEmail();
+            console.log('🟢 本时段无威胁，发送简短安全通报');
+        } else {
+            subject = `🛡️ wry合金防护 ${dateStr} ${data.periodLabel} — ${winFailTotal}次失败 · ${threatLabel}`;
+            body = html;
+            console.log('🔴 检测到威胁/活动，发送完整报告');
+        }
+        const info = await sendEmail(body, subject);
         console.log('✅ 报告邮件发送成功！');
         console.log('时间:', nowStr);
         console.log('半天:', data.periodLabel, '(', windowStartStr, '→', windowEndStr, ')');
