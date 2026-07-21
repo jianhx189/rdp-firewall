@@ -205,9 +205,22 @@ function getHealth() {
     return { ok: warnings.length === 0, warnings };
 }
 
+function shanghaiDateStr(ts) {
+    // 返回 Asia/Shanghai 时区的日期字符串 YYYY-MM-DD（用于按天归并与每日 0:00 重置）
+    try { return new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' }); }
+    catch (_) { return new Date(ts).toISOString().slice(0, 10); }
+}
+function isTodayTs(ts) {
+    return shanghaiDateStr(ts) === shanghaiDateStr(Date.now());
+}
+
+// 仅返回“今天”（Asia/Shanghai）的攻击事件，按时间倒序；每日 0:00 自然重置
 function getHistory() {
     const history = readJson(ATTACK_HISTORY_FILE, []);
-    return history.slice(-30).reverse().map(h => ({
+    const today = history
+        .filter(h => h.ts && isTodayTs(h.ts))
+        .sort((a, b) => b.ts - a.ts);
+    return today.map(h => ({
         ts: h.ts,
         time: h.time,
         total: h.total,

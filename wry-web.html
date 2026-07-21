@@ -419,7 +419,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
         <div class="stat blue">
             <div class="stat-icon">💥</div>
             <div class="stat-val" id="stat-fails">0</div>
-            <div class="stat-label">24h 失败总数</div>
+            <div class="stat-label">今日失败总数</div>
         </div>
     </div>
 
@@ -500,7 +500,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     <!-- Panel: History -->
     <div class="panel" id="panel-history">
         <div class="card">
-            <div class="card-header">📋 完整攻击历史</div>
+            <div class="card-header">📋 今日攻击历史</div>
             <div id="history-table"></div>
         </div>
     </div>
@@ -773,10 +773,10 @@ function updateStatus(s, history, logs) {
     // Stats
     $('stat-open').textContent = s.openCount ?? '-';
     $('stat-closed').textContent = s.closedCount ?? '-';
-    $('stat-attacks').textContent = (history || []).filter(x => isToday(x.time)).length;
-    const now24h = Date.now() - 24 * 3600 * 1000;
-    const total24h = (history || []).filter(h => h.ts > now24h).reduce((sum, h) => sum + (h.total || 0), 0);
-    $('stat-fails').textContent = total24h;
+    // 历史数据已限定为“今天”，直接计数/求和即今日统计
+    $('stat-attacks').textContent = (history || []).length;
+    const todayFails = (history || []).reduce((sum, h) => sum + (h.total || 0), 0);
+    $('stat-fails').textContent = todayFails;
 
     // Buttons
     const btnOpen   = $('btn-open');
