@@ -1,5 +1,20 @@
 # Changelog - wry合金防护
 
+## v3.2 (2026-07-21) — 按用户最新指示收敛
+
+### 密码策略
+- **强制开启密码固定为 `147369`**（保留环境变量 `RDP_GUARD_PASSWORD` 覆盖能力）。撤消 v3.1 的「随机生成 + 文件持久化」方案——用户明确选择简单固定口令。
+
+### 彻底不依赖 QClaw
+- 所有脚本（register-tasks.ps1 / wry-web-watchdog.js / wry-selfheal.ps1 / wry-guard-startup.bat / wry-guard-tray.bat）的 Node 路径改为**只用稳定安装 `D:\app\nodejs\node.exe`，缺失则回退 PATH**，不再扫描 QClaw 版本目录。
+- 说明：源码位于 `C:\Users\jianh\.qclaw\workspace\rdp-firewall` 是 QClaw 创建的 workspace 目录（仅位置），运行时已无任何 QClaw 二进制依赖；`E:\rdp-firewall-local` 为完全独立的部署副本。
+
+### 逻辑梳理（PM 视角，修复真正的自相矛盾）
+- **邮件报告与实际防护模型对齐（最大 bug）**：原 `getBlockedIPs()` 去查名为 `RDP BruteForce Block *` 的防火墙规则，但 guard 实际采用「禁用全部 RDP 入站 Allow 规则＝关端口」模型、从不创建这类规则 → 查询永远为空，导致邮件「当前封禁 IP」恒为 0、威胁等级建立在不存在的数据上。改为 `getActualBlockState()` 直接读 `rdp_guard_state.json` 的 `blockedAt / blockedIPs`。
+- **guard 封禁时记录触发 IP**：`rdp-guard.js` 在 `state` 写入 `blockedIPs`（触发源）与 `lastFailCount`，供面板/邮件展示真实原因。
+- **内外网判定自洽**：`192.168.3.88` 是本机唯一外网入口（跳板机），guard 早已按外部攻击源检测，但邮件 `isExternalIP` 曾把它误判成「内网」。统一为按外部对待（新增 `DETECT_IP` 常量与之呼应）。
+- **Web 面板 `force-close` / `force-cancel` 语义去重**：原两份逻辑完全复制粘贴（都 disable + 设 blockedAt + 删 forceOpen 文件）。现 `force-cancel` 仅取消「强制开启」覆盖、不关端口、交还控制权给 guard；`force-close` 保留「手动关端口 5 分钟」。
+
 ## v3.1 (2026-07-21)
 
 ### 安全加固

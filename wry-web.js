@@ -33,30 +33,9 @@ function getDataDir() {
 }
 const DATA_DIR = getDataDir();
 
-// 「强制开启」密码：优先环境变量 RDP_GUARD_PASSWORD；其次读 DATA_DIR 下的 rdp_guard_password.txt；
-// 都没有则首次启动随机生成并持久化到该文件（重启不变），仅记录一次到日志。
+// 「强制开启」密码：默认 147369，可用环境变量 RDP_GUARD_PASSWORD 覆盖。
+const FORCE_OPEN_PASSWORD = process.env.RDP_GUARD_PASSWORD || '147369';
 const FORCE_OPEN_FILE = path.join(DATA_DIR, 'rdp_force_open.json');
-function resolveForceOpenPassword() {
-    if (process.env.RDP_GUARD_PASSWORD) return process.env.RDP_GUARD_PASSWORD;
-    const pwFile = path.join(DATA_DIR, 'rdp_guard_password.txt');
-    try {
-        if (fs.existsSync(pwFile)) {
-            const p = fs.readFileSync(pwFile, 'utf8').trim();
-            if (p) return p;
-        }
-    } catch (_) {}
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-    let p = '';
-    for (let i = 0; i < 12; i++) p += chars[Math.floor(Math.random() * chars.length)];
-    try {
-        fs.writeFileSync(pwFile, p, { mode: 0o600 });
-        console.log('[SECURITY] 已生成随机「强制开启」密码并保存到 ' + pwFile + '（请妥善保存，进程重启不会改变）：' + p);
-    } catch (e) {
-        console.log('[SECURITY] 无法写入密码文件，使用临时随机密码（进程重启将变化）：' + p);
-    }
-    return p;
-}
-const FORCE_OPEN_PASSWORD = resolveForceOpenPassword();
 
 const STATE_FILE         = path.join(DATA_DIR, 'rdp_guard_state.json');
 const LOG_FILE           = path.join(DATA_DIR, 'rdp_block.log');
@@ -159,7 +138,7 @@ function disableRDPRules() {
 }
 
 function getState() {
-    return readJson(STATE_FILE, { blockedAt: null, lastFailCount: 0, lastTotal: 0 });
+    return readJson(STATE_FILE, { blockedAt: null, lastFailCount: 0, lastTotal: 0, blockedIPs: [] });
 }
 
 function getForceOpen() {
@@ -264,7 +243,7 @@ function getStatus() {
     } else if (blockedAt && blockedRemaining) {
         status = 'BLOCKED';
     }
-    return { status, portState, openCount, closedCount, total, blockedAt, blockedRemaining, forceOpenRemaining, forceOpenUntil, lastFailCount: state.lastFailCount, threshold: 3, lookback: 60 };
+    return { status, portState, openCount, closedCount, total, blockedAt, blockedRemaining, forceOpenRemaining, forceOpenUntil, lastFailCount: state.lastFailCount, blockedIPs: state.blockedIPs || [], threshold: 3, lookback: 60 };
 }
 
 function loadHtml() {
@@ -307,7 +286,7 @@ async function refreshStatusAsync() {
         } else if (blockedAt && blockedRemaining) {
             status = 'BLOCKED';
         }
-        cache.status = { status, portState, openCount, closedCount, total, blockedAt, blockedRemaining, forceOpenRemaining, forceOpenUntil, lastFailCount: state.lastFailCount || 0, threshold: 3, lookback: 60 };
+        cache.status = { status, portState, openCount, closedCount, total, blockedAt, blockedRemaining, forceOpenRemaining, forceOpenUntil, lastFailCount: state.lastFailCount || 0, blockedIPs: state.blockedIPs || [], threshold: 3, lookback: 60 };
         cache.forceOpen = fo && fo.until > Date.now() ? { active: true, since: fo.since, until: fo.until, remainingMs: fo.until - Date.now() } : { active: false };
     } catch (_) {}
     try { cache.logs = getRecentLogs(); } catch (_) {}
@@ -324,7 +303,7 @@ function quickInitCache() {
     const blockedAt = state.blockedAt ? new Date(state.blockedAt) : null;
     if (fo && fo.until && fo.until > Date.now()) status = 'FORCE_OPEN';
     else if (blockedAt && Date.now() - blockedAt.getTime() < 5 * 60 * 1000) status = 'BLOCKED';
-    cache.status = { status, portState: 'unknown', openCount: -1, closedCount: -1, total: -1, blockedRemaining: null, lastFailCount: state.lastFailCount || 0, threshold: 3, lookback: 60 };
+    cache.status = { status, portState: 'unknown', openCount: -1, closedCount: -1, total: -1, blockedRemaining: null, lastFailCount: state.lastFailCount || 0, blockedIPs: state.blockedIPs || [], threshold: 3, lookback: 60 };
     cache.forceOpen = fo && fo.until > Date.now() ? { active: true, since: fo.since, until: fo.until, remainingMs: fo.until - Date.now() } : { active: false };
     try { cache.logs = getRecentLogs(); } catch (_) {}
     try { cache.history = getHistory(); } catch (_) {}
@@ -430,14 +409,10 @@ const server = http.createServer((req, res) => {
             if (json.password !== FORCE_OPEN_PASSWORD) { sendJson({ ok: false, error: '密码错误' }, 401); return; }
             const fo = getForceOpen();
             if (!fo.active) { sendJson({ ok: false, error: '强制开启未激活，无需取消' }); return; }
-            // 真正关闭 RDP 端口
-            const closed = disableRDPRules();
-            // 设置封禁状态（让 guard 在 5 分钟后正常恢复）
-            let state = getState();
-            state.blockedAt = new Date().toISOString();
-            atomicWrite(STATE_FILE, JSON.stringify(state, null, 2));
+            // 仅取消「强制开启」覆盖，不关闭端口——交还控制权给 guard，
+            // guard 下一轮按真实状态接管（若仍在遭攻击将重新关闭端口，否则保持开启）。
             try { fs.unlinkSync(FORCE_OPEN_FILE); } catch (_) {}
-            sendJson({ ok: true, closed, message: 'RDP 端口已关闭，5 分钟后自动恢复' });
+            sendJson({ ok: true, message: '已取消强制开启，guard 将在下一轮按真实状态接管（若正遭攻击将重新关闭端口）' });
             cache.ts = 0; setTimeout(() => refreshStatusAsync(), 2000);
         });
         return;

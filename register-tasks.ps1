@@ -7,17 +7,9 @@ $TaskName = "wry合金防护"
 $TaskNameReport = "wry合金防护日报"
 $WorkDir = "C:\Users\jianh\.qclaw\workspace\rdp-firewall"
 
-# 解析 Node 路径：优先 QClaw 任意版本自带 node（升级自动跟随），回退到稳定安装 D:\app\nodejs\node.exe
-$qclawBase = "C:\Program Files\QClaw"
-$NodePath = $null
-if (Test-Path $qclawBase) {
-    $versions = Get-ChildItem $qclawBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } | Sort-Object Name -Descending
-    foreach ($v in $versions) {
-        $cand = Join-Path $v.FullName "resources\node\node.exe"
-        if (Test-Path $cand) { $NodePath = $cand; break }
-    }
-}
-if (-not $NodePath -or -not (Test-Path $NodePath)) { $NodePath = "D:\app\nodejs\node.exe" }
+# 解析 Node 路径：使用稳定安装 D:\app\nodejs\node.exe（不依赖 QClaw，避免升级后失效），回退到 PATH 中的 node
+$StableNode = "D:\app\nodejs\node.exe"
+$NodePath = $StableNode
 if (-not (Test-Path $NodePath)) { $NodePath = "node" }
 Write-Host "使用 Node 路径: $NodePath" -ForegroundColor Cyan
 

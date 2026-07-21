@@ -5,19 +5,9 @@
 
 $ErrorActionPreference = 'SilentlyContinue'
 
-# 解析 Node 路径：优先稳定安装 D:\app\nodejs\node.exe，其次 QClaw 任意版本自带 node，最后退回 PATH
+# 解析 Node 路径：稳定安装 D:\app\nodejs\node.exe（不依赖 QClaw），回退到 PATH
 $node = 'node'
 if (Test-Path 'D:\app\nodejs\node.exe') { $node = 'D:\app\nodejs\node.exe' }
-else {
-    $qclawBase = 'C:\Program Files\QClaw'
-    if (Test-Path $qclawBase) {
-        $versions = Get-ChildItem $qclawBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } | Sort-Object Name -Descending
-        foreach ($v in $versions) {
-            $cand = Join-Path $v.FullName 'resources\node\node.exe'
-            if (Test-Path $cand) { $node = $cand; break }
-        }
-    }
-}
 $work   = 'C:\Users\jianh\.qclaw\workspace\rdp-firewall'
 $webJs  = Join-Path $work 'wry-web.js'
 $guardJs= Join-Path $work 'rdp-guard.js'

@@ -203,7 +203,7 @@ function persistSnapshot(total, ipCounts) {
 }
 
 function loadState() {
-    return safeReadJson(STATE_FILE, { blockedAt: null });
+    return safeReadJson(STATE_FILE, { blockedAt: null, blockedIPs: [] });
 }
 
 function saveState(s) {
@@ -469,8 +469,10 @@ async function main() {
         // 禁用所有 RDP 入站规则
         const disabledCount = disableRDPRules();
 
-        // 更新状态
+        // 更新状态（记录触发 IP 与失败次数，供面板/邮件展示真实原因）
         state.blockedAt = new Date().toISOString();
+        state.blockedIPs = triggeredIPs;
+        state.lastFailCount = total;
         saveState(state);
 
         writeLog(`RDP 端口已关闭（禁用 ${disabledCount} 条规则），` +

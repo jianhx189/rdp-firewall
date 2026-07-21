@@ -7,27 +7,13 @@ const net = require('net');
 const PORT = 19888;
 const WEB_SCRIPT = path.join(__dirname, 'wry-web.js');
 
-// 按优先级解析 Node 可执行文件路径（避免写死 QClaw 版本号导致升级后失效）
+// 解析 Node 路径：使用稳定安装 D:\app\nodejs\node.exe（不依赖 QClaw），回退到 PATH
 function resolveNode() {
-    const candidates = [];
-    // 1. 任意版本的 QClaw 自带 node（随 QClaw 升级自动跟随）
-    try {
-        const qclawBase = 'C:\\Program Files\\QClaw';
-        if (fs.existsSync(qclawBase)) {
-            const versions = fs.readdirSync(qclawBase)
-                .filter(v => /^\d+\.\d+\.\d+\.\d+$/.test(v))
-                .sort()
-                .reverse();
-            for (const v of versions) {
-                candidates.push(path.join(qclawBase, v, 'resources', 'node', 'node.exe'));
-            }
-        }
-    } catch (_) {}
-    // 2. 稳定手动安装
-    candidates.push('D:\\app\\nodejs\\node.exe');
-    candidates.push('C:\\Users\\jianh\\.workbuddy\\binaries\\node\\versions\\22.22.2\\node.exe');
-    // 3. 当前进程 / PATH
-    candidates.push(process.execPath, process.env.NODE_PATH, 'node');
+    const candidates = [
+        'D:\\app\\nodejs\\node.exe',
+        process.execPath,
+        'node',
+    ];
     for (const c of candidates.filter(Boolean)) {
         try { if (fs.existsSync(c)) return c; } catch (_) {}
     }

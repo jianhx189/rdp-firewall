@@ -8,6 +8,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// 与 rdp-guard.js 保持一致：封禁（关闭端口）后自动恢复时长（分钟）
+const REOPEN_MINUTES = 5;
+
 // [FIX 2026-07-04] 添加数据文件路径常量
 const ATTACK_HISTORY_FILE = os.homedir() + '\\Documents\\rdp_attack_history.json';
 const SNAPSHOT_FILE = os.homedir() + '\\Documents\\rdp_snapshots.json';
@@ -209,14 +212,21 @@ function getEvents() {
              dataSource: winEvents.length > 0 && blockCount > 0 ? 'SecurityLog' : 'fallback' };
 }
 
-function getBlockedIPs() {
+// 读取真实的「封禁」状态。
+// 重要：guard 采用的是「关闭 RDP 端口」模型（禁用所有 RDP 入站 Allow 规则），
+// 并不会创建名为 "RDP BruteForce Block *" 的防火墙规则。因此这里不能去查防火墙规则，
+// 必须直接读 rdp_guard_state.json 的 blockedAt / blockedIPs。
+function getActualBlockState() {
+    const stateFile = os.homedir() + '\\Documents\\rdp_guard_state.json';
     try {
-        const out = execSync(
-            'powershell -NoProfile -Command "Get-NetFirewallRule -DisplayName \'RDP BruteForce Block *\' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $true } | ForEach-Object { if ($_.DisplayName -match \'RDP BruteForce Block ([\\d\\.]+)\') { $Matches[1] } }"',
-            { encoding: 'utf8', timeout: 15000, windowsHide: true }
-        );
-        return out.trim().split('\n').map(s => s.trim()).filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip));
-    } catch { return []; }
+        const st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        if (st.blockedAt) {
+            const elapsedMin = (Date.now() - new Date(st.blockedAt).getTime()) / 60000;
+            const remaining = Math.max(0, Math.ceil(REOPEN_MINUTES - elapsedMin));
+            return { closed: remaining > 0, remainingMin: remaining, blockedIPs: st.blockedIPs || [] };
+        }
+    } catch (_) {}
+    return { closed: false, remainingMin: 0, blockedIPs: [] };
 }
 
 function getRecentLogs() {
@@ -238,7 +248,11 @@ function escapeHtml(str) {
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// 192.168.3.88 是本机唯一外网入口（跳板机），黑客与个人访问都走它，
+// 因此与 guard 一致，把它按「外部」对待，而不是误判成内网。
+const DETECT_IP = '192.168.3.88';
 function isExternalIP(ip) {
+    if (ip === DETECT_IP) return true;
     return !/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1)/.test(ip);
 }
 
@@ -251,7 +265,8 @@ function riskLevel(count) {
 
 // ============ 主流程 ============
 const data = getEvents();
-const blockedIPs = getBlockedIPs();
+const blockState = getActualBlockState();
+const blockedIPs = blockState.blockedIPs;
 const recentLogs = getRecentLogs();
 const guardState = getGuardState();
 
@@ -351,14 +366,19 @@ if (statusEntries.length === 0) {
 }
 
 let blockRows = '';
-if (blockedIPs.length === 0) {
-    blockRows = '<div style="text-align:center;color:#27ae60;padding:16px;font-size:13px;">🛡️ 当前无封禁 IP，系统正常运行</div>';
+if (blockState.closed) {
+    blockRows = `<div style="background:#fff5f5;border:1px solid #f5c6cb;border-radius:8px;padding:16px;color:#e74c3c;font-size:13px;line-height:1.7;">
+        🚫 RDP 端口当前<b>关闭中</b>（防护激活，约 ${blockState.remainingMin} 分钟后自动恢复）。
+        ${blockedIPs.length ? '触发 IP：' + blockedIPs.map(escapeHtml).join('、') : '触发 IP 未在状态文件中记录'}
+    </div>`;
+} else if (blockedIPs.length === 0) {
+    blockRows = '<div style="text-align:center;color:#27ae60;padding:16px;font-size:13px;">🛡️ 当前无封禁，系统正常运行</div>';
 } else {
     blockRows = '<div style="display:flex;flex-wrap:wrap;gap:8px;padding:4px 0;">';
     for (const ip of blockedIPs) {
         blockRows += `<span style="background:#fff5f5;color:#e74c3c;border:1px solid #f5c6cb;padding:5px 14px;border-radius:20px;font-family:monospace;font-size:13px;font-weight:600;">🚫 ${escapeHtml(ip)}</span>`;
     }
-    blockRows += `</div><div style="color:#94a0b8;font-size:12px;padding:8px 0;">共 ${blockedIPs.length} 个 IP 被封禁</div>`;
+    blockRows += `</div><div style="color:#94a0b8;font-size:12px;padding:8px 0;">共 ${blockedIPs.length} 个 IP 被记录为最近一次封禁的触发源</div>`;
 }
 
 let logRows = '';

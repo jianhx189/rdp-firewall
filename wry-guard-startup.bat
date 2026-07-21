@@ -20,14 +20,9 @@ echo  ================================
 echo.
 cd /d %~dp0
 
-REM 解析 Node 路径：优先稳定安装 D:\app\nodejs\node.exe，其次 QClaw 任意版本自带 node，最后退回 PATH
+REM 解析 Node 路径：使用稳定安装 D:\app\nodejs\node.exe（不依赖 QClaw），回退到 PATH 的 node
 set "NODE_EXE="
 if exist "D:\app\nodejs\node.exe" set "NODE_EXE=D:\app\nodejs\node.exe"
-if not defined NODE_EXE (
-  for /d %%G in ("C:\Program Files\QClaw\*") do (
-    if exist "%%G\resources\node\node.exe" set "NODE_EXE=%%G\resources\node\node.exe"
-  )
-)
 if not defined NODE_EXE set "NODE_EXE=node"
 echo [+] Node: %NODE_EXE%
 

@@ -6,14 +6,9 @@ REM ============================================================
 title wry合金防护 v3 [运行中 - 关闭此窗口将关闭防火墙]
 cd /d E:\rdp-firewall-local
 
-REM 解析 Node 路径：优先稳定安装 D:\app\nodejs\node.exe，其次 QClaw 任意版本自带 node，最后退回 PATH
+REM 解析 Node 路径：使用稳定安装 D:\app\nodejs\node.exe（不依赖 QClaw），回退到 PATH 的 node
 set "NODE_EXE="
 if exist "D:\app\nodejs\node.exe" set "NODE_EXE=D:\app\nodejs\node.exe"
-if not defined NODE_EXE (
-  for /d %%G in ("C:\Program Files\QClaw\*") do (
-    if exist "%%G\resources\node\node.exe" set "NODE_EXE=%%G\resources\node\node.exe"
-  )
-)
 if not defined NODE_EXE set "NODE_EXE=node"
 set NODE="%NODE_EXE%"
 
