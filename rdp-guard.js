@@ -214,10 +214,10 @@ function saveState(s) {
 // PowerShell 执行（自动检测编码）
 // ============================================================================
 
-function ps(command) {
+function ps(command, timeoutMs) {
     try {
         const buf = execSync(command, {
-            encoding: 'buffer', timeout: 20000, windowsHide: true, shell: 'powershell.exe'
+            encoding: 'buffer', timeout: timeoutMs || 20000, windowsHide: true, shell: 'powershell.exe'
         });
         // 1. UTF-16-LE（PowerShell 默认输出，有 BOM）
         if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) {
@@ -245,55 +245,59 @@ function ps(command) {
 // 防火墙操作
 // ============================================================================
 
-// 获取所有 RDP 入站允许规则
-function getRDPRules(enabled) {
-    const flag = enabled ? 'True' : 'False';
-    const out = ps(`Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow -Enabled ${flag} | Select-Object Name,DisplayName | ConvertTo-Json -Compress`);
+// 获取所有 RDP 入站允许规则（不设 -Enabled 过滤，整组取出后在 JS 判断）
+// 关键：-Enabled True/False 在 0 匹配时直接抛 CIM 错误 -> 被 ps 吞掉返回空串，
+// 导致「禁用成功(0)」与「查询失败(也是0)」无法区分。改为全量取回后 JS 过滤。
+function getRDPRulesAll() {
+    const out = ps("Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Select-Object Name,DisplayName,Enabled | ConvertTo-Json -Compress");
     let rules = [];
-    try { rules = JSON.parse(out); } catch (_) {}
-    return Array.isArray(rules) ? rules : (rules.Name ? [rules] : []);
+    try { rules = JSON.parse(out); } catch (_) { return []; }
+    if (!Array.isArray(rules)) rules = (rules && rules.Name) ? [rules] : [];
+    return rules.map(r => ({ name: r.Name, displayName: r.DisplayName || r.Name, enabled: r.Enabled === true || r.Enabled === 'True' }));
+}
+function getRDPRules(enabled) {
+    return getRDPRulesAll().filter(r => r.enabled === enabled);
+}
+function isRDPOpen() {
+    return getRDPRulesAll().some(r => r.enabled);
 }
 
-// 禁用所有 RDP 入站允许规则（关闭端口）
+// 禁用所有 RDP 入站允许规则（关闭端口），批量一次执行 + 同会话 Sleep 确保生效
 function disableRDPRules() {
     const rules = getRDPRules(true);
-    let count = 0;
-    for (const r of rules) {
-        ps(`Disable-NetFirewallRule -Name '${r.Name}'`);
-        writeLog(`已禁用 RDP 规则: ${r.DisplayName || r.Name}`);
-        count++;
-    }
-    return count;
+    if (rules.length === 0) return 0;
+    const names = rules.map(r => r.Name.replace(/'/g, "''"));
+    const batched = names.map(n => `Disable-NetFirewallRule -Name '${n}'`).join('; ');
+    const out = ps(`${batched}; Start-Sleep -Milliseconds 600; $open = (Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Where-Object { \$_.Enabled -eq 'True' } | Measure-Object | Select-Object -ExpandProperty Count); "RemainingOpen=$open"`, 60000);
+    writeLog(`已禁用 RDP 规则 (${rules.length} 条, 封禁后仍启用: ${(out.match(/RemainingOpen=(\d+)/) || [,'?'])[1]})`);
+    return rules.length;
 }
 
-// 启用所有 RDP 入站允许规则（开启端口）
+// 启用所有 RDP 入站允许规则（开启端口），批量一次执行 + 同会话 Sleep + 验证
 // 如果原有规则被系统保护无法启用，自动创建兜底规则
 function enableRDPRules() {
     const rules = getRDPRules(false);
-    let count = 0;
-    for (const r of rules) {
-        const result = ps(`Enable-NetFirewallRule -Name '${r.Name}'`);
-        if (result && result.includes('拒绝访问')) {
-            writeLog(`[WARN] 无法启用规则 ${r.Name}（权限不足），将使用兜底规则`);
-        } else {
-            writeLog(`已恢复 RDP 规则: ${r.DisplayName || r.Name}`);
-            count++;
+    if (rules.length === 0) {
+        // 所有规则已启用或不存在，检查兜底
+        if (getRDPRulesAll().length === 0) {
+            writeLog('[WARN] 无 RDP 规则，创建兜底规则');
+            ps(`New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'`);
+            return 1;
         }
+        return 0;
     }
-    // 验证：确认至少有一条 RDP 规则处于启用状态
-    const openCount = getRDPRules(true).length;
-    if (openCount === 0) {
-        writeLog('[WARN] 所有 RDP 规则均无法启用，创建兜底规则');
+    const names = rules.map(r => r.Name.replace(/'/g, "''"));
+    const batched = names.map(n => `Enable-NetFirewallRule -Name '${n}'`).join('; ');
+    const out = ps(`${batched}; Start-Sleep -Milliseconds 600; $open = (Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Where-Object { \$_.Enabled -eq 'True' } | Measure-Object | Select-Object -ExpandProperty Count); "EnabledCount=$open"`, 60000);
+    const match = out.match(/EnabledCount=(\d+)/);
+    const enabledCount = match ? parseInt(match[1], 10) : -1;
+    writeLog(`已启用 RDP 规则 (${rules.length} 条, 启用后生效数: ${enabledCount === -1 ? '?' : enabledCount})`);
+    if (enabledCount === 0) {
+        writeLog('[WARN] 启用后仍无 RDP 规则开启，创建兜底规则');
         ps(`New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'`);
-        count++;
+        return rules.length + 1;
     }
-    return count;
-}
-
-// 判断 RDP 端口当前是否开启（检查是否有 Allow 规则处于启用状态）
-function isRDPOpen() {
-    const rules = getRDPRules(true);
-    return rules.length > 0;
+    return rules.length;
 }
 
 // ============================================================================

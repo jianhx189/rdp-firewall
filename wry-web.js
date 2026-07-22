@@ -139,7 +139,7 @@ async function runFirewallMutation(type, rules) {
     const names = rules.map(r => r.name.replace(/'/g, "''"));
     const action = type === 'Enable' ? 'Enable-NetFirewallRule' : 'Disable-NetFirewallRule';
     const cmdParts = names.map(n => `${action} -Name '${n}'`);
-    const verify = "$open = Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Where-Object { $_.Enabled -eq 'True' } | Measure-Object | Select-Object -ExpandProperty Count; $open";
+    const verify = "Start-Sleep -Milliseconds 600; $open = Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Where-Object { $_.Enabled -eq 'True' } | Measure-Object | Select-Object -ExpandProperty Count; $open";
     const script = cmdParts.join('; ') + '; ' + verify;
     const out = await psAsync(script, 60000);
     const openCount = parseInt((out || '').trim(), 10) || 0;
