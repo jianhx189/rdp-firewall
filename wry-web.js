@@ -7,6 +7,8 @@
 //   5. UI 优化：按钮状态动态联动、强制开启倒计时显示
 // v3.8 变更（2026-07-21）：启动自清理遗留的「wry合金防护-兜底RDP」重复规则；
 //   启用规则仅在整组为空（原厂规则被误删）时才新建兜底规则，避免重复堆积
+// v3.9 变更（2026-07-22）：RDP 规则启用/禁用改为批量异步执行 + 60s 超时，
+//   避免多次 spawn powershell 导致请求超时/连接丢失；缓存刷新改用可靠的整组查询
 
 const http = require('http');
 const fs = require('fs');
@@ -77,17 +79,17 @@ function decodePsOutput(buf) {
     return new TextDecoder('gb18030', { fatal: false }).decode(buf);
 }
 
-function psRaw(cmd) {
+function psRaw(cmd, timeoutMs) {
     try {
-        const buf = execSync(cmd, { encoding: 'buffer', timeout: 15000, windowsHide: true, shell: 'powershell.exe' });
+        const buf = execSync(cmd, { encoding: 'buffer', timeout: timeoutMs || 30000, windowsHide: true, shell: 'powershell.exe' });
         return decodePsOutput(buf);
     } catch (_) { return ''; }
 }
 
 // 异步版：不阻塞事件循环，用于后台缓存刷新
-function psAsync(cmd) {
+function psAsync(cmd, timeoutMs) {
     return new Promise((resolve) => {
-        exec(cmd, { timeout: 15000, windowsHide: true, shell: 'powershell.exe', encoding: 'buffer' }, (err, stdout) => {
+        exec(cmd, { timeout: timeoutMs || 30000, windowsHide: true, shell: 'powershell.exe', encoding: 'buffer' }, (err, stdout) => {
             if (err || !stdout) { resolve(''); return; }
             try { resolve(decodePsOutput(stdout)); } catch (_) { resolve(''); }
         });
@@ -120,27 +122,37 @@ function getRDPClosedCount() {
     try { return getRDPRulesRaw().filter(r => !r.enabled).length; } catch (_) { return 0; }
 }
 
-function enableRDPRules() {
+async function getRDPRulesAsync() {
+    const out = await psAsync("Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Select-Object Name,Enabled | ConvertTo-Json -Compress", 30000);
+    let arr = [];
+    try { arr = JSON.parse(out); } catch (_) { return []; }
+    if (!Array.isArray(arr)) arr = (arr && arr.Name) ? [arr] : [];
+    return arr.map(r => ({ name: r.Name, enabled: r.Enabled === true || r.Enabled === 'True' }));
+}
+
+async function enableRDPRules() {
     // 启用当前处于「禁用」状态的 RDP 规则；返回实际启用的数量
+    // 改为一次性批量执行，避免多次 spawn powershell 导致超时/连接丢失
     const rules = getRDPRulesRaw().filter(r => !r.enabled);
-    for (const r of rules) {
-        psRaw(`Enable-NetFirewallRule -Name '${r.name.replace(/'/g, "''")}'`);
+    if (rules.length > 0) {
+        const script = rules.map(r => `Enable-NetFirewallRule -Name '${r.name.replace(/'/g, "''")}'`).join('; ');
+        await psAsync(script, 60000);
     }
     let count = rules.length;
-    // 兜底：仅当整组规则都不存在（原厂 RDP 规则被误删）时才新建一条，
-    // 避免上次「启用失败」后反复堆积重复兜底规则
+    // 兜底：仅当整组规则都不存在（原厂 RDP 规则被误删）时才新建一条
     if (getRDPRulesRaw().length === 0) {
-        psRaw("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'");
+        await psAsync("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'", 60000);
         count++;
     }
     return count;
 }
 
-function disableRDPRules() {
+async function disableRDPRules() {
     // 禁用当前处于「启用」状态的 RDP 规则（即关闭 3389 端口）；返回实际禁用的数量
     const rules = getRDPRulesRaw().filter(r => r.enabled);
-    for (const r of rules) {
-        psRaw(`Disable-NetFirewallRule -Name '${r.name.replace(/'/g, "''")}'`);
+    if (rules.length > 0) {
+        const script = rules.map(r => `Disable-NetFirewallRule -Name '${r.name.replace(/'/g, "''")}'`).join('; ');
+        await psAsync(script, 60000);
     }
     return rules.length;
 }
@@ -155,12 +167,10 @@ function cleanupFallbackRules() {
         let arr = [];
         try { arr = JSON.parse(out); } catch (_) { return 0; }
         if (!Array.isArray(arr)) arr = (arr && arr.Name) ? [arr] : [];
-        let removed = 0;
-        for (const r of arr) {
-            psRaw(`Remove-NetFirewallRule -Name '${String(r.Name).replace(/'/g, "''")}'`);
-            removed++;
-        }
-        return removed;
+        if (arr.length === 0) return 0;
+        const script = arr.map(r => `Remove-NetFirewallRule -Name '${String(r.Name).replace(/'/g, "''")}'`).join('; ');
+        psRaw(script, 60000);
+        return arr.length;
     } catch (_) { return 0; }
 }
 
@@ -316,23 +326,25 @@ let closeInProgress = false;
 const cache = { status: null, logs: [], history: [], forceOpen: null, health: { ok: true, warnings: [] }, ts: 0 };
 const CACHE_INTERVAL = 15000;  // 15秒刷新
 
+let refreshInProgress = false;
 async function refreshStatusAsync() {
+    if (refreshInProgress) return;
+    refreshInProgress = true;
     try {
-        const [openOut, closedOut] = await Promise.all([
-            psAsync("Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow -Enabled True | Measure-Object | Select-Object -ExpandProperty Count"),
-            psAsync("Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow -Enabled False | Measure-Object | Select-Object -ExpandProperty Count"),
-        ]);
-        const openCount = parseInt((openOut || '').trim(), 10) || 0;
-        const closedCount = parseInt((closedOut || '').trim(), 10) || 0;
+        const rules = await getRDPRulesAsync();
+        const openCount = rules.filter(r => r.enabled).length;
+        const closedCount = rules.filter(r => !r.enabled).length;
         const state = getState();
         const fo = getForceOpen();
         cache.status = deriveStatus({ openCount, closedCount, state, forceOpen: fo });
         cache.forceOpen = fo.active ? { active: true, since: fo.since, until: fo.until, remainingMs: fo.remainingMs } : { active: false };
-    } catch (_) {}
-    try { cache.logs = getRecentLogs(); } catch (_) {}
-    try { cache.history = getHistory(); } catch (_) {}
-    try { cache.health = getHealth(); } catch (_) {}
-    cache.ts = Date.now();
+        try { cache.logs = getRecentLogs(); } catch (_) {}
+        try { cache.history = getHistory(); } catch (_) {}
+        try { cache.health = getHealth(); } catch (_) {}
+        cache.ts = Date.now();
+    } finally {
+        refreshInProgress = false;
+    }
 }
 
 // 快速初始填充（不含 PowerShell，秒级可用）
@@ -396,7 +408,7 @@ const server = http.createServer((req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/force-open') {
         let body = '';
         req.on('data', c => body += c);
-        req.on('end', () => {
+        req.on('end', async () => {
             let json = {};
             try { json = JSON.parse(body); } catch (_) {}
             if (!json.password) { sendJson({ ok: false, error: '请提供密码' }, 400); return; }
@@ -406,9 +418,15 @@ const server = http.createServer((req, res) => {
             try {
                 const fo = getForceOpen();
                 if (fo.active) { sendJson({ ok: false, error: '强制开启已生效，无需重复开启', until: new Date(fo.until).toLocaleString('zh-CN', { timeZone: TZ }), remainingMs: fo.remainingMs }); return; }
-                const restored = enableRDPRules();
+                const restored = await enableRDPRules();
                 // 验证：开启后必须至少有一条 RDP 规则处于启用状态，否则视为失败
-                if (getRDPOpenCount() === 0) {
+                // 防火墙服务提交可能略有延迟，最多重试 2 次
+                let openCount = getRDPOpenCount();
+                for (let i = 0; i < 2 && openCount === 0; i++) {
+                    await new Promise(r => setTimeout(r, 800));
+                    openCount = getRDPOpenCount();
+                }
+                if (openCount === 0) {
                     sendJson({ ok: false, error: '开启失败：无法启用任何 RDP 规则（可能权限不足或被系统保护）' }, 500);
                     return;
                 }
@@ -428,7 +446,7 @@ const server = http.createServer((req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/close') {
         let body = '';
         req.on('data', c => body += c);
-        req.on('end', () => {
+        req.on('end', async () => {
             let json = {};
             try { json = JSON.parse(body); } catch (_) {}
             if (!json.password) { sendJson({ ok: false, error: '请提供密码' }, 400); return; }
@@ -436,9 +454,14 @@ const server = http.createServer((req, res) => {
             if (closeInProgress) { sendJson({ ok: false, error: '操作进行中，请稍候' }, 429); return; }
             closeInProgress = true;
             try {
-                const closed = disableRDPRules();
+                const closed = await disableRDPRules();
                 // 验证：禁用后必须没有任何 RDP 规则处于启用状态，否则视为失败
-                const stillOpen = getRDPOpenCount();
+                // 防火墙服务提交可能略有延迟，最多重试 2 次
+                let stillOpen = getRDPOpenCount();
+                for (let i = 0; i < 2 && stillOpen > 0; i++) {
+                    await new Promise(r => setTimeout(r, 800));
+                    stillOpen = getRDPOpenCount();
+                }
                 if (stillOpen > 0) {
                     sendJson({ ok: false, error: `关闭失败：仍有 ${stillOpen} 条 RDP 规则处于启用状态（可能权限不足或被系统保护）` }, 500);
                     return;
