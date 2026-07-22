@@ -113,7 +113,7 @@ function getRDPRulesRaw() {
     let arr = [];
     try { arr = JSON.parse(out); } catch (_) { return []; }
     if (!Array.isArray(arr)) arr = (arr && arr.Name) ? [arr] : [];
-    return arr.map(r => ({ name: r.Name, enabled: r.Enabled === true || r.Enabled === 'True' }));
+    return arr.map(r => ({ name: r.Name, enabled: r.Enabled === true || r.Enabled === 'True' || r.Enabled === 1 || r.Enabled === '1' }));
 }
 
 function getRDPOpenCount() {
@@ -129,7 +129,7 @@ async function getRDPRulesAsync() {
     let arr = [];
     try { arr = JSON.parse(out); } catch (_) { return []; }
     if (!Array.isArray(arr)) arr = (arr && arr.Name) ? [arr] : [];
-    return arr.map(r => ({ name: r.Name, enabled: r.Enabled === true || r.Enabled === 'True' }));
+    return arr.map(r => ({ name: r.Name, enabled: r.Enabled === true || r.Enabled === 'True' || r.Enabled === 1 || r.Enabled === '1' }));
 }
 
 // 在同一 PowerShell 会话内完成规则启用/禁用并立即校验结果，

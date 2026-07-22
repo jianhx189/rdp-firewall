@@ -253,7 +253,7 @@ function getRDPRulesAll() {
     let rules = [];
     try { rules = JSON.parse(out); } catch (_) { return []; }
     if (!Array.isArray(rules)) rules = (rules && rules.Name) ? [rules] : [];
-    return rules.map(r => ({ name: r.Name, Name: r.Name, displayName: r.DisplayName || r.Name, enabled: r.Enabled === true || r.Enabled === 'True' }));
+    return rules.map(r => ({ name: r.Name, Name: r.Name, displayName: r.DisplayName || r.Name, enabled: r.Enabled === true || r.Enabled === 'True' || r.Enabled === 1 || r.Enabled === '1' }));
 }
 function getRDPRules(enabled) {
     return getRDPRulesAll().filter(r => r.enabled === enabled);
