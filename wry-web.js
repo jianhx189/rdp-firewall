@@ -110,34 +110,39 @@ function getRDPClosedCount() {
     try { return parseInt(out.trim(), 10) || 0; } catch (_) { return 0; }
 }
 
-function enableRDPRules() {
-    // 尝试启用原有规则
+function getRDPRuleNames(enabled) {
+    const flag = enabled ? 'True' : 'False';
     const out = psRaw(
-        'Get-NetFirewallRule -Group \'@FirewallAPI.dll,-28752\' -Direction Inbound -Action Allow -Enabled False | Enable-NetFirewallRule; ' +
-        'Get-NetFirewallRule -Group \'@FirewallAPI.dll,-28752\' -Direction Inbound -Action Allow -Enabled True | Measure-Object | Select-Object -ExpandProperty Count'
+        `Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow -Enabled ${flag} | Select-Object -ExpandProperty Name`
     );
-    let enabledCount = 0;
-    try {
-        const lines = out.trim().split('\n');
-        enabledCount = parseInt(lines[lines.length - 1].trim(), 10) || 0;
-    } catch (_) {}
-    // 如果没有规则成功启用，创建兜底规则
-    if (enabledCount === 0) {
-        psRaw("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'");
-        enabledCount = 1;
+    return out.split('\n').map(s => s.trim()).filter(Boolean);
+}
+
+function enableRDPRules() {
+    // 启用当前处于「禁用」状态的 RDP 规则；返回实际尝试启用的数量
+    const names = getRDPRuleNames(false);
+    let count = 0;
+    for (const name of names) {
+        psRaw(`Enable-NetFirewallRule -Name '${name.replace(/'/g, "''")}'`);
+        count++;
     }
-    return enabledCount;
+    // 兜底：若仍然没有任何启用的 RDP 规则，创建一条
+    if (getRDPRuleNames(true).length === 0) {
+        psRaw("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'");
+        count++;
+    }
+    return count;
 }
 
 function disableRDPRules() {
-    const out = psRaw(
-        'Get-NetFirewallRule -Group \'@FirewallAPI.dll,-28752\' -Direction Inbound -Action Allow -Enabled True | Disable-NetFirewallRule; ' +
-        'Get-NetFirewallRule -Group \'@FirewallAPI.dll,-28752\' -Direction Inbound -Action Allow -Enabled True | Measure-Object | Select-Object -ExpandProperty Count'
-    );
-    try {
-        const lines = out.trim().split('\n');
-        return parseInt(lines[lines.length - 1].trim(), 10) || 0;
-    } catch (_) { return 0; }
+    // 禁用当前处于「启用」状态的 RDP 规则（即关闭 3389 端口）；返回实际禁用的数量
+    const names = getRDPRuleNames(true);
+    let count = 0;
+    for (const name of names) {
+        psRaw(`Disable-NetFirewallRule -Name '${name.replace(/'/g, "''")}'`);
+        count++;
+    }
+    return count;
 }
 
 function getState() {
@@ -378,6 +383,11 @@ const server = http.createServer((req, res) => {
                 const fo = getForceOpen();
                 if (fo.active) { sendJson({ ok: false, error: '强制开启已生效，无需重复开启', until: new Date(fo.until).toLocaleString('zh-CN', { timeZone: TZ }), remainingMs: fo.remainingMs }); return; }
                 const restored = enableRDPRules();
+                // 验证：开启后必须至少有一条 RDP 规则处于启用状态，否则视为失败
+                if (getRDPOpenCount() === 0) {
+                    sendJson({ ok: false, error: '开启失败：无法启用任何 RDP 规则（可能权限不足或被系统保护）' }, 500);
+                    return;
+                }
                 const now = Date.now();
                 atomicWrite(FORCE_OPEN_FILE, JSON.stringify({ since: now, until: now + FORCE_OPEN_DURATION_MS }));
                 let state = getState();
@@ -403,6 +413,12 @@ const server = http.createServer((req, res) => {
             closeInProgress = true;
             try {
                 const closed = disableRDPRules();
+                // 验证：禁用后必须没有任何 RDP 规则处于启用状态，否则视为失败
+                const stillOpen = getRDPOpenCount();
+                if (stillOpen > 0) {
+                    sendJson({ ok: false, error: `关闭失败：仍有 ${stillOpen} 条 RDP 规则处于启用状态（可能权限不足或被系统保护）` }, 500);
+                    return;
+                }
                 const now = new Date();
                 let state = getState();
                 // 手动关闭：标记为 manual，guard 不会自动恢复，端口保持关闭直到用户强制开启
@@ -413,7 +429,7 @@ const server = http.createServer((req, res) => {
                 atomicWrite(STATE_FILE, JSON.stringify(state, null, 2));
                 // 清除可能存在的强制开启状态
                 try { fs.unlinkSync(FORCE_OPEN_FILE); } catch (_) {}
-                sendJson({ ok: true, closed, message: 'RDP 端口已关闭（手动关闭，不会自动恢复，需强制开启才能重新打开）' });
+                sendJson({ ok: true, closed, message: `RDP 端口已关闭（已禁用 ${closed} 条规则，不会自动恢复，需强制开启才能重新打开）` });
                 cache.ts = 0; setTimeout(() => refreshStatusAsync(), 2000);
             } finally {
                 closeInProgress = false;
