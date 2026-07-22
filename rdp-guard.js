@@ -394,13 +394,15 @@ async function main() {
                         const count = enableRDPRules();
                         writeLog(`⚡ forceOpen 强制启用 RDP（恢复 ${count} 条规则）`);
                     }
-                    // 如果当前是封禁状态 → 立即解除
+                    // 如果当前是（攻击或手动）关闭状态 → 立即解除，交还控制权
                     const state = loadState();
                     if (state.blockedAt) {
                         const count = enableRDPRules();
                         state.blockedAt = null;
+                        state.closeReason = null;
+                        state.lastFailCount = 0;
                         saveState(state);
-                        writeLog(`⚡ forceOpen 立即解除封禁，恢复 RDP（恢复 ${count} 条规则）`);
+                        writeLog(`⚡ forceOpen 立即解除关闭状态，恢复 RDP（恢复 ${count} 条规则）`);
                     }
                     persistSnapshot(0, {});
                     unlock(); process.exit(0);
@@ -417,10 +419,23 @@ async function main() {
         if (state.blockedAt) {
             const blockedTime = new Date(state.blockedAt);
             const elapsedMin = (Date.now() - blockedTime.getTime()) / 60000;
+            // 用户手动关闭：保持关闭，绝不自动恢复（除非用户强制开启）
+            if (state.closeReason === 'manual') {
+                if (!isRDPOpen()) {
+                    writeLog('RDP 端口处于手动关闭状态（保持关闭，不自动恢复）');
+                } else {
+                    const count = disableRDPRules();
+                    writeLog(`手动关闭状态下再次确认端口关闭（禁用 ${count} 条规则）`);
+                }
+                persistSnapshot(0, {});
+                unlock(); process.exit(0);
+            }
+            // 攻击封禁：倒计时到期后自动恢复
             if (elapsedMin >= REOPEN_MINUTES) {
                 // 封禁到期，自动恢复
                 const count = enableRDPRules();
                 state.blockedAt = null;
+                state.closeReason = null;
                 saveState(state);
                 writeLog(`RDP 端口已自动恢复（关闭 ${REOPEN_MINUTES} 分钟后）`);
             } else {
@@ -471,6 +486,7 @@ async function main() {
 
         // 更新状态（记录触发 IP 与失败次数，供面板/邮件展示真实原因）
         state.blockedAt = new Date().toISOString();
+        state.closeReason = 'attack';
         state.blockedIPs = triggeredIPs;
         state.lastFailCount = total;
         saveState(state);

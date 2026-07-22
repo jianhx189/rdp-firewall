@@ -1,5 +1,28 @@
 # Changelog - wry合金防护
 
+## v3.4 (2026-07-22) — 网页按钮逻辑理顺（两种状态、手动关闭持久化）
+
+### 核心改动：按钮逻辑只剩两条清晰路径
+- **无攻击（NORMAL，端口开放）**：界面只显示一个按钮 **「关闭 RDP 端口」**。点击 → 输入密码（147369）→ 后端 `disableRDPRules()` 立即禁用全部 RDP 入站 Allow 规则，端口**确实关闭**。
+- **受到攻击（BLOCKED，端口关闭）**：状态栏**大字红色显示「⚠ 受到攻击，端口已关闭」**并带脉冲动画，下方显示**倒计时**（距自动恢复剩余分钟），只提供 **「强制开启 RDP」** 按钮。点击 → 输入密码校验 → 强制开启端口 **5 分钟**；5 分钟结束后若仍在遭攻击，guard 按规则重新关闭。
+- 新增 **MANUAL_CLOSED**（用户手动关闭）与 **FORCE_OPEN**（强制开启中）两种界面态，按钮/提示随之联动：
+  - FORCE_OPEN：显示强制开启倒计时 + 「立即关闭端口」（可提前结束）。
+  - MANUAL_CLOSED：提示「已手动关闭，不会自动恢复」+ 「强制开启 RDP」重新打开。
+
+### 手动关闭真正「持久」（修复之前被 guard 静默重开的隐患）
+- 旧 `force-close` 把端口关 5 分钟后由 guard 自动重开，且 guard 的「无攻击→确保端口开放」逻辑会在 1 分钟内把手动关闭的端口重新打开，导致「关不掉」。
+- 现手动关闭写入 `rdp_guard_state.json` 的 `blockedAt` + **`closeReason: 'manual'`**；guard 遇到 `manual` 状态时**保持关闭、绝不自动恢复**，并每分钟再次确认端口确实关闭。
+- 重新打开的唯一途径是面板「强制开启 RDP」（密码校验），符合「要确实关闭」的诉求。
+
+### 状态字段扩展（向后兼容）
+- `rdp_guard_state.json` 新增 `closeReason`（`'attack'` | `'manual'`）；旧数据无该字段时按 `'attack'` 处理，不影响现有封禁展示。
+- `wry-web.js` 新增统一状态推导 `deriveStatus()`，产出 `NORMAL / BLOCKED / FORCE_OPEN / MANUAL_CLOSED` 四态，并附带 `blockedRemainingMs`（平滑倒计时）、`closeReason`。
+- 接口收敛：`/api/force-close`、`/api/force-cancel` 合并为 **`/api/close`**（手动持久关闭）；`/api/force-open` 在开启时清空 `blockedAt`/`closeReason`，交还控制权给 guard。
+
+### 验证
+- `node --check` 三个脚本全部通过；`deriveStatus` 单测 16/16 通过；临时端口+临时数据目录的端到端 HTTP 测试覆盖 NORMAL→MANUAL_CLOSED→FORCE_OPEN 全链路与密码校验。
+- 看门狗（wry-rdp-web）按 mtime 自动重新部署，源码保存后 ≤1 分钟生效，无需手动操作。
+
 ## v3.3 (2026-07-21) — 网页统计仅限当天 + 看门狗自动部署
 
 ### 网页统计按天归并、每日 0:00 重置

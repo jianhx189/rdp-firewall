@@ -74,8 +74,14 @@ body {
     transition: all 0.4s;
 }
 .status-hero.NORMAL    { background: var(--green-dim);  border-color: var(--green); }
-.status-hero.BLOCKED   { background: var(--red-dim);    border-color: var(--red); }
+.status-hero.BLOCKED   { background: var(--red-dim);    border-color: var(--red); border-width: 3px; animation: alert-pulse 1.6s ease-in-out infinite; }
 .status-hero.FORCE_OPEN { background: var(--blue-dim);  border-color: var(--blue); }
+/* 受到攻击时，状态标题放大大字显示 */
+.status-hero.BLOCKED .status-info h2 { font-size: 30px; font-weight: 900; letter-spacing: 1px; }
+@keyframes alert-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(248,81,73,0.55); }
+    50%      { box-shadow: 0 0 0 14px rgba(248,81,73,0); }
+}
 
 .status-icon { font-size: 56px; line-height: 1; flex-shrink: 0; }
 .status-info { flex: 1; }
@@ -425,14 +431,11 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 
     <!-- Buttons -->
     <div class="btn-row">
-        <button class="btn btn-open" id="btn-open" onclick="showModal('modal-open')">
-            🚀 强制开启 RDP
-        </button>
         <button class="btn btn-red" id="btn-close" onclick="showModal('modal-close')">
-            ⛔ 手动关闭端口
+            ⛔ 关闭 RDP 端口
         </button>
-        <button class="btn btn-blue" id="btn-cancel" onclick="showModal('modal-cancel')" style="display:none">
-            ✕ 取消强制开启
+        <button class="btn btn-blue" id="btn-open" onclick="showModal('modal-open')">
+            🚀 强制开启 RDP
         </button>
         <span class="btn-hint" id="btn-hint"></span>
     </div>
@@ -442,14 +445,19 @@ tr:hover td { background: rgba(255,255,255,0.02); }
         <strong>🛡 监控中</strong> — RDP 端口正常开放，系统每分钟检测一次暴力破解攻击。
         检测到 <strong>3 次</strong>及以上同 IP 登录失败（60 秒窗口），自动关闭端口 5 分钟。
         <br><strong>内网 IP 全部放行</strong>（10.x.x.x、172.16-31.x.x、192.168.x.x），跳板机 192.168.3.88 参与检测（不放行）。
+        <br>无攻击时，你可随时点击「关闭 RDP 端口」手动关闭。
     </div>
     <div class="info red" id="info-blocked" style="display:none">
-        <strong>🔒 端口已关闭</strong> — 检测到暴力破解，RDP 端口已被防火墙规则关闭，外部无法连接。
-        5 分钟后自动恢复。如需立即恢复，使用「强制开启 RDP」。
+        <strong>🚨 受到攻击，端口已关闭！</strong> — 检测到暴力破解，RDP 端口已被防火墙规则关闭，外部无法连接。
+        <strong id="info-blocked-countdown">5 分钟</strong>后自动恢复；如确需立即连接，使用「强制开启 RDP」（开启 5 分钟）。
     </div>
     <div class="info blue" id="info-force" style="display:none">
-        <strong>✅ 强制开启中</strong> — RDP 端口被用户手动强制开启，防护已暂停。
-        到期后自动恢复监控。点击「取消强制开启」可提前终止。
+        <strong>✅ 强制开启中</strong> — RDP 端口被你临时强制开启，防护暂停。
+        到期后自动关闭；若届时仍在遭攻击，将按规则重新关闭端口。
+    </div>
+    <div class="info yellow" id="info-manual" style="display:none">
+        <strong>🔒 端口已手动关闭</strong> — 由你手动关闭，<strong>不会自动恢复</strong>。
+        如需重新开放，使用「强制开启 RDP」。
     </div>
 
     <!-- Tabs -->
@@ -531,7 +539,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     <div class="modal">
         <div class="modal-icon">🚀</div>
         <h3>强制开启 RDP 端口</h3>
-        <p>此操作将<strong>立即启用所有 RDP 防火墙规则</strong>，使 RDP 端口可从外部访问，有效期 <strong>5 分钟</strong>。</p>
+        <p>此操作将<strong>立即启用所有 RDP 防火墙规则</strong>，使 RDP 端口可从外部访问，有效期 <strong>5 分钟</strong>。到期后若仍在遭攻击，将按规则重新关闭端口。</p>
         <p class="warn">⚠️ 请确认是你本人操作</p>
         <label class="pwd-label">输入密码确认身份：</label>
         <input type="password" id="pwd-open" placeholder="请输入后端密码" onkeydown="if(event.key==='Enter')doOpen()">
@@ -546,29 +554,14 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 <div class="modal-bg" id="modal-close">
     <div class="modal">
         <div class="modal-icon">⛔</div>
-        <h3>手动关闭 RDP 端口</h3>
-        <p>此操作将<strong>立即禁用所有 RDP 防火墙规则</strong>，关闭 RDP 访问，<strong>5 分钟后自动恢复</strong>。</p>
-        <p class="warn">⚠️ 请确认是你本人操作</p>
+        <h3>关闭 RDP 端口</h3>
+        <p>此操作将<strong>立即禁用所有 RDP 防火墙规则</strong>，关闭 RDP 访问。</p>
+        <p class="warn">⚠️ 端口将保持关闭，直到你使用「强制开启 RDP」重新打开（不会自动恢复）。请确认是你本人操作。</p>
         <label class="pwd-label">输入密码确认身份：</label>
         <input type="password" id="pwd-close" placeholder="请输入后端密码" onkeydown="if(event.key==='Enter')doClose()">
         <div class="modal-btns">
             <button class="btn btn-dark" onclick="hideModal('close')">取消</button>
             <button class="btn btn-red" onclick="doClose()">确认关闭</button>
-        </div>
-    </div>
-</div>
-
-<!-- Modal: Cancel force open -->
-<div class="modal-bg" id="modal-cancel">
-    <div class="modal">
-        <div class="modal-icon">✕</div>
-        <h3>取消强制开启</h3>
-        <p>此操作将立即<strong>关闭 RDP 端口</strong>，恢复防护状态（由 guard.js 管理）。</p>
-        <label class="pwd-label">输入密码确认身份：</label>
-        <input type="password" id="pwd-cancel" placeholder="请输入后端密码" onkeydown="if(event.key==='Enter')doCancel()">
-        <div class="modal-btns">
-            <button class="btn btn-dark" onclick="hideModal('cancel')">取消</button>
-            <button class="btn btn-red" onclick="doCancel()">确认取消</button>
         </div>
     </div>
 </div>
@@ -632,6 +625,13 @@ function fmtCountdown(ms) {
     return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
 }
 
+function startCountdown() {
+    if (!cdInterval) cdInterval = setInterval(refreshAll, 1000);
+}
+function stopCountdown() {
+    if (cdInterval) { clearInterval(cdInterval); cdInterval = null; }
+}
+
 function fmtTime(ts) {
     if (!ts) return '-';
     return new Date(ts).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai'});
@@ -666,21 +666,9 @@ async function doClose() {
     if (!pwd) { toast('请输入密码', 'err'); return; }
     hideModal('close');
     try {
-        const r = await apiPost('/api/force-close', { password: pwd });
+        const r = await apiPost('/api/close', { password: pwd });
         if (!r.ok) { toast(r.error || '操作失败', 'err'); return; }
-        toast(`RDP 端口已关闭（${r.closed} 条规则禁用），5 分钟后自动恢复`, 'ok');
-        refreshAll();
-    } catch(e) { toast('网络错误', 'err'); }
-}
-
-async function doCancel() {
-    const pwd = document.querySelector('#modal-cancel input').value;
-    if (!pwd) { toast('请输入密码', 'err'); return; }
-    hideModal('cancel');
-    try {
-        const r = await apiPost('/api/force-cancel', { password: pwd });
-        if (!r.ok) { toast(r.error || '操作失败', 'err'); return; }
-        toast(r.message || '强制开启已取消', 'ok');
+        toast(`RDP 端口已关闭（禁用 ${r.closed} 条规则），需强制开启才能重开`, 'ok');
         refreshAll();
     } catch(e) { toast('网络错误', 'err'); }
 }
@@ -734,40 +722,48 @@ function updateStatus(s, history, logs) {
 
     const titles = {
         NORMAL: 'RDP 端口开放 — 防护监控中',
-        BLOCKED: 'RDP 端口已关闭 — 攻击封禁中',
+        BLOCKED: '⚠ 受到攻击，端口已关闭',
         FORCE_OPEN: 'RDP 强制开启中 — 用户手动操作',
+        MANUAL_CLOSED: 'RDP 端口已手动关闭',
     };
     const descs = {
         NORMAL: `${s.openCount} 条防火墙规则已启用，每分钟检测暴力破解。攻击阈值：${s.threshold} 次失败 / ${s.lookback} 秒`,
-        BLOCKED: `检测到暴力破解，端口已关闭 ${s.blockedAt}，${s.blockedRemaining} 分钟后自动恢复`,
-        FORCE_OPEN: `强制开启生效中，${s.forceOpenUntil} 到期自动关闭`,
+        BLOCKED: `检测到暴力破解，RDP 端口已被防火墙规则关闭，外部无法连接。剩余 ${s.blockedRemaining} 分钟后自动恢复。`,
+        FORCE_OPEN: `强制开启生效中，${s.forceOpenUntil} 到期自动关闭。`,
+        MANUAL_CLOSED: `端口由你手动关闭，不会自动恢复。如需开启，使用「强制开启 RDP」。`,
     };
-    const icons = { NORMAL: '🛡', BLOCKED: '🔒', FORCE_OPEN: '✅' };
+    const icons = { NORMAL: '🛡', BLOCKED: '🚨', FORCE_OPEN: '✅', MANUAL_CLOSED: '🔒' };
 
     $('status-title').textContent = titles[s.status] || s.status;
     $('status-desc').textContent = descs[s.status] || '';
     $('status-icon').textContent = icons[s.status] || '🛡';
 
     // Shield color
-    const colors = { NORMAL: 'var(--green)', BLOCKED: 'var(--red)', FORCE_OPEN: 'var(--blue)' };
+    const colors = { NORMAL: 'var(--green)', BLOCKED: 'var(--red)', FORCE_OPEN: 'var(--blue)', MANUAL_CLOSED: 'var(--yellow)' };
     $('shield').style.color = colors[s.status] || 'var(--text)';
 
     // Clock
     $('clock').textContent = new Date().toLocaleTimeString('zh-CN');
 
     // Countdown
-    if (s.status === 'FORCE_OPEN' && s.forceOpenRemaining) {
+    if (s.status === 'FORCE_OPEN' && s.forceOpenRemaining != null) {
         $('countdown-num').textContent = fmtCountdown(s.forceOpenRemaining);
         $('countdown-label').textContent = '强制开启剩余';
-        if (!cdInterval) cdInterval = setInterval(refreshAll, 1000);
-    } else if (s.status === 'BLOCKED' && s.blockedRemaining) {
-        $('countdown-num').textContent = s.blockedRemaining + 'm';
+        startCountdown();
+    } else if (s.status === 'BLOCKED' && s.blockedRemainingMs != null) {
+        $('countdown-num').textContent = fmtCountdown(s.blockedRemainingMs);
         $('countdown-label').textContent = '端口关闭剩余';
-        if (cdInterval) { clearInterval(cdInterval); cdInterval = null; }
+        startCountdown();
+        const cd = $('info-blocked-countdown');
+        if (cd) cd.textContent = s.blockedRemaining + ' 分钟';
+    } else if (s.status === 'MANUAL_CLOSED') {
+        $('countdown-num').textContent = '🔒';
+        $('countdown-label').textContent = '已手动关闭';
+        stopCountdown();
     } else {
         $('countdown-num').textContent = '🛡';
         $('countdown-label').textContent = '系统正常';
-        if (cdInterval) { clearInterval(cdInterval); cdInterval = null; }
+        stopCountdown();
     }
 
     // Stats
@@ -778,18 +774,26 @@ function updateStatus(s, history, logs) {
     const todayFails = (history || []).reduce((sum, h) => sum + (h.total || 0), 0);
     $('stat-fails').textContent = todayFails;
 
-    // Buttons
+    // Buttons — 核心按钮逻辑：
+    //   无攻击（NORMAL）      → 只显示「关闭 RDP 端口」
+    //   受到攻击（BLOCKED）    → 只显示「强制开启 RDP」
+    //   强制开启中（FORCE_OPEN）→ 显示「立即关闭端口」（可提前结束）
+    //   手动关闭（MANUAL_CLOSED）→ 只显示「强制开启 RDP」（重新打开）
     const btnOpen   = $('btn-open');
     const btnClose  = $('btn-close');
-    const btnCancel = $('btn-cancel');
-    btnOpen.style.display   = (s.status === 'NORMAL' || s.status === 'BLOCKED') ? '' : 'none';
-    btnClose.style.display  = (s.status === 'NORMAL') ? '' : 'none';
-    btnCancel.style.display = (s.status === 'FORCE_OPEN') ? '' : 'none';
+    btnOpen.style.display  = (s.status === 'BLOCKED' || s.status === 'MANUAL_CLOSED') ? '' : 'none';
+    btnClose.style.display = (s.status === 'NORMAL' || s.status === 'FORCE_OPEN') ? '' : 'none';
+    if (s.status === 'FORCE_OPEN') {
+        btnClose.textContent = '⛔ 立即关闭端口';
+    } else {
+        btnClose.textContent = '⛔ 关闭 RDP 端口';
+    }
 
     // Info boxes
-    $('info-normal').style.display  = s.status === 'NORMAL' ? '' : 'none';
-    $('info-blocked').style.display = s.status === 'BLOCKED' ? '' : 'none';
-    $('info-force').style.display   = s.status === 'FORCE_OPEN' ? '' : 'none';
+    $('info-normal').style.display    = s.status === 'NORMAL' ? '' : 'none';
+    $('info-blocked').style.display   = s.status === 'BLOCKED' ? '' : 'none';
+    $('info-force').style.display     = s.status === 'FORCE_OPEN' ? '' : 'none';
+    $('info-manual').style.display    = s.status === 'MANUAL_CLOSED' ? '' : 'none';
 
     // Tables
     renderOverview(history || []);

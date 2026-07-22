@@ -13,6 +13,9 @@ const os = require('os');
 const { execSync, exec } = require('child_process');
 
 const FORCE_OPEN_DURATION_MS = 5 * 60 * 1000;
+const REOPEN_MINUTES = 5;        // 攻击封禁后自动恢复时间（分钟）
+const THRESHOLD = 3;             // 触发关闭端口的同 IP 失败次数阈值
+const LOOKBACK = 60;             // 回溯时间窗口（秒）
 // 运行数据目录（SYSTEM 用户时回退到实际用户目录）
 function getDataDir() {
     const homedir = os.homedir();
@@ -138,7 +141,7 @@ function disableRDPRules() {
 }
 
 function getState() {
-    return readJson(STATE_FILE, { blockedAt: null, lastFailCount: 0, lastTotal: 0, blockedIPs: [] });
+    return readJson(STATE_FILE, { blockedAt: null, closeReason: null, lastFailCount: 0, lastTotal: 0, blockedIPs: [] });
 }
 
 function getForceOpen() {
@@ -230,33 +233,51 @@ function getHistory() {
     }));
 }
 
-function getStatus() {
-    const state = getState();
-    const openCount = getRDPOpenCount();
-    const closedCount = getRDPClosedCount();
+// 根据防火墙规则计数 + 状态文件 + 强制开启文件，推导统一的面板状态机
+function deriveStatus({ openCount, closedCount, state, forceOpen }) {
     const total = openCount + closedCount;
     let portState = 'unknown';
     if (total > 0) portState = openCount > 0 ? 'open' : 'blocked';
-    const blockedAt = state.blockedAt ? new Date(state.blockedAt) : null;
-    let blockedRemaining = null;
-    if (blockedAt) {
-        const elapsed = (Date.now() - blockedAt.getTime()) / 60000;
-        const remaining = Math.max(0, Math.ceil(5 - elapsed));
-        if (remaining > 0) blockedRemaining = remaining;
-    }
-    // forceOpen
-    const forceOpen = getForceOpen();
+    const blockedAt = state && state.blockedAt ? new Date(state.blockedAt) : null;
+    const closeReason = (state && state.closeReason) || 'attack';
     let status = 'NORMAL';
+    let blockedRemaining = null;
+    let blockedRemainingMs = null;
     let forceOpenRemaining = null;
     let forceOpenUntil = null;
-    if (forceOpen.active) {
+    if (forceOpen && forceOpen.active) {
         status = 'FORCE_OPEN';
         forceOpenRemaining = forceOpen.remainingMs;
         forceOpenUntil = formatTime(new Date(forceOpen.until));
-    } else if (blockedAt && blockedRemaining) {
-        status = 'BLOCKED';
+    } else if (blockedAt) {
+        const elapsedMs = Date.now() - blockedAt.getTime();
+        if (closeReason === 'manual') {
+            status = 'MANUAL_CLOSED';        // 用户手动关闭：保持关闭，绝不自动恢复
+        } else {
+            status = 'BLOCKED';              // 攻击封禁：倒计时自动恢复
+            const remainingMs = Math.max(0, REOPEN_MINUTES * 60000 - elapsedMs);
+            blockedRemainingMs = remainingMs;
+            blockedRemaining = Math.ceil(remainingMs / 60000);
+        }
     }
-    return { status, portState, openCount, closedCount, total, blockedAt, blockedRemaining, forceOpenRemaining, forceOpenUntil, lastFailCount: state.lastFailCount, blockedIPs: state.blockedIPs || [], threshold: 3, lookback: 60 };
+    return {
+        status, portState, openCount, closedCount, total,
+        blockedAt, blockedRemaining, blockedRemainingMs,
+        forceOpenRemaining, forceOpenUntil,
+        lastFailCount: (state && state.lastFailCount) || 0,
+        blockedIPs: (state && state.blockedIPs) || [],
+        closeReason,
+        threshold: THRESHOLD, lookback: LOOKBACK,
+    };
+}
+
+function getStatus() {
+    return deriveStatus({
+        openCount: getRDPOpenCount(),
+        closedCount: getRDPClosedCount(),
+        state: getState(),
+        forceOpen: getForceOpen(),
+    });
 }
 
 function loadHtml() {
@@ -265,6 +286,7 @@ function loadHtml() {
 
 // ===== 互斥标志 =====
 let forceOpenInProgress = false;
+let closeInProgress = false;
 
 // ===== 后台缓存：异步采集，HTTP 请求零延迟 =====
 const cache = { status: null, logs: [], history: [], forceOpen: null, health: { ok: true, warnings: [] }, ts: 0 };
@@ -278,29 +300,10 @@ async function refreshStatusAsync() {
         ]);
         const openCount = parseInt((openOut || '').trim(), 10) || 0;
         const closedCount = parseInt((closedOut || '').trim(), 10) || 0;
-        const total = openCount + closedCount;
-        let portState = 'unknown';
-        if (total > 0) portState = openCount > 0 ? 'open' : 'blocked';
-
-        const state = readJson(STATE_FILE, { blockedAt: null, lastFailCount: 0 });
-        const blockedAt = state.blockedAt ? new Date(state.blockedAt) : null;
-        let blockedRemaining = null;
-        if (blockedAt) {
-            const elapsed = (Date.now() - blockedAt.getTime()) / 60000;
-            const remaining = Math.max(0, Math.ceil(5 - elapsed));
-            if (remaining > 0) blockedRemaining = remaining;
-        }
-        const fo = readJson(FORCE_OPEN_FILE, null);
-        let status = 'NORMAL', forceOpenRemaining = null, forceOpenUntil = null;
-        if (fo && fo.until && fo.until > Date.now()) {
-            status = 'FORCE_OPEN';
-            forceOpenRemaining = fo.until - Date.now();
-            forceOpenUntil = formatTime(new Date(fo.until));
-        } else if (blockedAt && blockedRemaining) {
-            status = 'BLOCKED';
-        }
-        cache.status = { status, portState, openCount, closedCount, total, blockedAt, blockedRemaining, forceOpenRemaining, forceOpenUntil, lastFailCount: state.lastFailCount || 0, blockedIPs: state.blockedIPs || [], threshold: 3, lookback: 60 };
-        cache.forceOpen = fo && fo.until > Date.now() ? { active: true, since: fo.since, until: fo.until, remainingMs: fo.until - Date.now() } : { active: false };
+        const state = getState();
+        const fo = getForceOpen();
+        cache.status = deriveStatus({ openCount, closedCount, state, forceOpen: fo });
+        cache.forceOpen = fo.active ? { active: true, since: fo.since, until: fo.until, remainingMs: fo.remainingMs } : { active: false };
     } catch (_) {}
     try { cache.logs = getRecentLogs(); } catch (_) {}
     try { cache.history = getHistory(); } catch (_) {}
@@ -310,14 +313,10 @@ async function refreshStatusAsync() {
 
 // 快速初始填充（不含 PowerShell，秒级可用）
 function quickInitCache() {
-    const state = readJson(STATE_FILE, { blockedAt: null, lastFailCount: 0 });
-    const fo = readJson(FORCE_OPEN_FILE, null);
-    let status = 'NORMAL';
-    const blockedAt = state.blockedAt ? new Date(state.blockedAt) : null;
-    if (fo && fo.until && fo.until > Date.now()) status = 'FORCE_OPEN';
-    else if (blockedAt && Date.now() - blockedAt.getTime() < 5 * 60 * 1000) status = 'BLOCKED';
-    cache.status = { status, portState: 'unknown', openCount: -1, closedCount: -1, total: -1, blockedRemaining: null, lastFailCount: state.lastFailCount || 0, blockedIPs: state.blockedIPs || [], threshold: 3, lookback: 60 };
-    cache.forceOpen = fo && fo.until > Date.now() ? { active: true, since: fo.since, until: fo.until, remainingMs: fo.until - Date.now() } : { active: false };
+    const state = getState();
+    const fo = getForceOpen();
+    cache.status = deriveStatus({ openCount: -1, closedCount: -1, state, forceOpen: fo });
+    cache.forceOpen = fo.active ? { active: true, since: fo.since, until: fo.until, remainingMs: fo.remainingMs } : { active: false };
     try { cache.logs = getRecentLogs(); } catch (_) {}
     try { cache.history = getHistory(); } catch (_) {}
     cache.ts = Date.now();
@@ -382,7 +381,7 @@ const server = http.createServer((req, res) => {
                 const now = Date.now();
                 atomicWrite(FORCE_OPEN_FILE, JSON.stringify({ since: now, until: now + FORCE_OPEN_DURATION_MS }));
                 let state = getState();
-                if (state.blockedAt) { state.blockedAt = null; state.lastFailCount = 0; atomicWrite(STATE_FILE, JSON.stringify(state, null, 2)); }
+                if (state.blockedAt) { state.blockedAt = null; state.closeReason = null; state.lastFailCount = 0; atomicWrite(STATE_FILE, JSON.stringify(state, null, 2)); }
                 sendJson({ ok: true, since: new Date(now).toLocaleString('zh-CN', { timeZone: TZ }), until: new Date(now + FORCE_OPEN_DURATION_MS).toLocaleString('zh-CN', { timeZone: TZ }), remainingMs: FORCE_OPEN_DURATION_MS, restored });
                 cache.ts = 0; setTimeout(() => refreshStatusAsync(), 2000);
             } finally {
@@ -392,7 +391,7 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    if (req.method === 'POST' && url.pathname === '/api/force-close') {
+    if (req.method === 'POST' && url.pathname === '/api/close') {
         let body = '';
         req.on('data', c => body += c);
         req.on('end', () => {
@@ -400,33 +399,25 @@ const server = http.createServer((req, res) => {
             try { json = JSON.parse(body); } catch (_) {}
             if (!json.password) { sendJson({ ok: false, error: '请提供密码' }, 400); return; }
             if (json.password !== FORCE_OPEN_PASSWORD) { sendJson({ ok: false, error: '密码错误' }, 401); return; }
-            const closed = disableRDPRules();
-            let state = getState();
-            state.blockedAt = new Date().toISOString();
-            atomicWrite(STATE_FILE, JSON.stringify(state, null, 2));
-            // 清除 force-open 状态，防止 guard 下次运行时覆盖
-            try { fs.unlinkSync(FORCE_OPEN_FILE); } catch (_) {}
-            sendJson({ ok: true, closed, message: 'RDP 端口已手动关闭，5 分钟后自动恢复' });
-            cache.ts = 0; setTimeout(() => refreshStatusAsync(), 2000);
-        });
-        return;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/api/force-cancel') {
-        let body = '';
-        req.on('data', c => body += c);
-        req.on('end', () => {
-            let json = {};
-            try { json = JSON.parse(body); } catch (_) {}
-            if (!json.password) { sendJson({ ok: false, error: '请提供密码' }, 400); return; }
-            if (json.password !== FORCE_OPEN_PASSWORD) { sendJson({ ok: false, error: '密码错误' }, 401); return; }
-            const fo = getForceOpen();
-            if (!fo.active) { sendJson({ ok: false, error: '强制开启未激活，无需取消' }); return; }
-            // 仅取消「强制开启」覆盖，不关闭端口——交还控制权给 guard，
-            // guard 下一轮按真实状态接管（若仍在遭攻击将重新关闭端口，否则保持开启）。
-            try { fs.unlinkSync(FORCE_OPEN_FILE); } catch (_) {}
-            sendJson({ ok: true, message: '已取消强制开启，guard 将在下一轮按真实状态接管（若正遭攻击将重新关闭端口）' });
-            cache.ts = 0; setTimeout(() => refreshStatusAsync(), 2000);
+            if (closeInProgress) { sendJson({ ok: false, error: '操作进行中，请稍候' }, 429); return; }
+            closeInProgress = true;
+            try {
+                const closed = disableRDPRules();
+                const now = new Date();
+                let state = getState();
+                // 手动关闭：标记为 manual，guard 不会自动恢复，端口保持关闭直到用户强制开启
+                state.blockedAt = now.toISOString();
+                state.closeReason = 'manual';
+                state.blockedIPs = [];
+                state.lastFailCount = 0;
+                atomicWrite(STATE_FILE, JSON.stringify(state, null, 2));
+                // 清除可能存在的强制开启状态
+                try { fs.unlinkSync(FORCE_OPEN_FILE); } catch (_) {}
+                sendJson({ ok: true, closed, message: 'RDP 端口已关闭（手动关闭，不会自动恢复，需强制开启才能重新打开）' });
+                cache.ts = 0; setTimeout(() => refreshStatusAsync(), 2000);
+            } finally {
+                closeInProgress = false;
+            }
         });
         return;
     }
