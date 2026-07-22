@@ -9,6 +9,8 @@
 //   启用规则仅在整组为空（原厂规则被误删）时才新建兜底规则，避免重复堆积
 // v3.9 变更（2026-07-22）：RDP 规则启用/禁用改为批量异步执行 + 60s 超时，
 //   避免多次 spawn powershell 导致请求超时/连接丢失；缓存刷新改用可靠的整组查询
+// v3.10 变更（2026-07-22）：启用/禁用与结果校验在同一 PowerShell 会话内完成，
+//   避免跨会话查询延迟导致误判开启/关闭失败
 
 const http = require('http');
 const fs = require('fs');
@@ -130,31 +132,42 @@ async function getRDPRulesAsync() {
     return arr.map(r => ({ name: r.Name, enabled: r.Enabled === true || r.Enabled === 'True' }));
 }
 
+// 在同一 PowerShell 会话内完成规则启用/禁用并立即校验结果，
+// 避免跨会话查询延迟/缓存导致误判，也避免多次 spawn powershell 超时
+async function runFirewallMutation(type, rules) {
+    if (rules.length === 0) return { mutated: 0, openCount: getRDPOpenCount() };
+    const names = rules.map(r => r.name.replace(/'/g, "''"));
+    const action = type === 'Enable' ? 'Enable-NetFirewallRule' : 'Disable-NetFirewallRule';
+    const cmdParts = names.map(n => `${action} -Name '${n}'`);
+    const verify = "$open = Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Where-Object { $_.Enabled -eq 'True' } | Measure-Object | Select-Object -ExpandProperty Count; $open";
+    const script = cmdParts.join('; ') + '; ' + verify;
+    const out = await psAsync(script, 60000);
+    const openCount = parseInt((out || '').trim(), 10) || 0;
+    return { mutated: rules.length, openCount };
+}
+
 async function enableRDPRules() {
-    // 启用当前处于「禁用」状态的 RDP 规则；返回实际启用的数量
-    // 改为一次性批量执行，避免多次 spawn powershell 导致超时/连接丢失
     const rules = getRDPRulesRaw().filter(r => !r.enabled);
+    let mutated = 0;
+    let openCount = getRDPOpenCount();
     if (rules.length > 0) {
-        const script = rules.map(r => `Enable-NetFirewallRule -Name '${r.name.replace(/'/g, "''")}'`).join('; ');
-        await psAsync(script, 60000);
+        const res = await runFirewallMutation('Enable', rules);
+        mutated = res.mutated;
+        openCount = res.openCount;
     }
-    let count = rules.length;
     // 兜底：仅当整组规则都不存在（原厂 RDP 规则被误删）时才新建一条
     if (getRDPRulesRaw().length === 0) {
         await psAsync("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'", 60000);
-        count++;
+        mutated++;
+        openCount = 1;
     }
-    return count;
+    return { mutated, openCount };
 }
 
 async function disableRDPRules() {
-    // 禁用当前处于「启用」状态的 RDP 规则（即关闭 3389 端口）；返回实际禁用的数量
     const rules = getRDPRulesRaw().filter(r => r.enabled);
-    if (rules.length > 0) {
-        const script = rules.map(r => `Disable-NetFirewallRule -Name '${r.name.replace(/'/g, "''")}'`).join('; ');
-        await psAsync(script, 60000);
-    }
-    return rules.length;
+    if (rules.length === 0) return { mutated: 0, openCount: getRDPOpenCount() };
+    return await runFirewallMutation('Disable', rules);
 }
 
 // 清理测试/历史遗留的兜底规则：仅当原厂 RDP 规则（RemoteDesktop-*）仍存在时才移除，
@@ -418,14 +431,8 @@ const server = http.createServer((req, res) => {
             try {
                 const fo = getForceOpen();
                 if (fo.active) { sendJson({ ok: false, error: '强制开启已生效，无需重复开启', until: new Date(fo.until).toLocaleString('zh-CN', { timeZone: TZ }), remainingMs: fo.remainingMs }); return; }
-                const restored = await enableRDPRules();
+                const { mutated: restored, openCount } = await enableRDPRules();
                 // 验证：开启后必须至少有一条 RDP 规则处于启用状态，否则视为失败
-                // 防火墙服务提交可能略有延迟，最多重试 2 次
-                let openCount = getRDPOpenCount();
-                for (let i = 0; i < 2 && openCount === 0; i++) {
-                    await new Promise(r => setTimeout(r, 800));
-                    openCount = getRDPOpenCount();
-                }
                 if (openCount === 0) {
                     sendJson({ ok: false, error: '开启失败：无法启用任何 RDP 规则（可能权限不足或被系统保护）' }, 500);
                     return;
@@ -454,14 +461,8 @@ const server = http.createServer((req, res) => {
             if (closeInProgress) { sendJson({ ok: false, error: '操作进行中，请稍候' }, 429); return; }
             closeInProgress = true;
             try {
-                const closed = await disableRDPRules();
+                const { mutated: closed, openCount: stillOpen } = await disableRDPRules();
                 // 验证：禁用后必须没有任何 RDP 规则处于启用状态，否则视为失败
-                // 防火墙服务提交可能略有延迟，最多重试 2 次
-                let stillOpen = getRDPOpenCount();
-                for (let i = 0; i < 2 && stillOpen > 0; i++) {
-                    await new Promise(r => setTimeout(r, 800));
-                    stillOpen = getRDPOpenCount();
-                }
                 if (stillOpen > 0) {
                     sendJson({ ok: false, error: `关闭失败：仍有 ${stillOpen} 条 RDP 规则处于启用状态（可能权限不足或被系统保护）` }, 500);
                     return;
