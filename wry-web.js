@@ -96,38 +96,37 @@ function formatTime(date) {
     return date.toLocaleString('zh-CN', { timeZone: TZ });
 }
 
-function getRDPOpenCount() {
+// 取出 RDP 组全部入站 Allow 规则及其 Enabled 状态。
+// 关键：不在这里用 -Enabled 过滤——当 0 条匹配时 Get-NetFirewallRule -Enabled X 会直接抛错，
+// 被 psRaw 吞掉后返回 ''，导致「禁用成功(剩0)」与「查询失败(也是0)」无法区分。
+// 改为一次性取出后在 JS 里判断 Enabled，0 条时也只是返回空数组，不会报错。
+function getRDPRulesRaw() {
     const out = psRaw(
-        'Get-NetFirewallRule -Group \'@FirewallAPI.dll,-28752\' -Direction Inbound -Action Allow -Enabled True | Measure-Object | Select-Object -ExpandProperty Count'
+        "Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Select-Object Name,Enabled | ConvertTo-Json -Compress"
     );
-    try { return parseInt(out.trim(), 10) || 0; } catch (_) { return 0; }
+    let arr = [];
+    try { arr = JSON.parse(out); } catch (_) { return []; }
+    if (!Array.isArray(arr)) arr = (arr && arr.Name) ? [arr] : [];
+    return arr.map(r => ({ name: r.Name, enabled: r.Enabled === true || r.Enabled === 'True' }));
+}
+
+function getRDPOpenCount() {
+    try { return getRDPRulesRaw().filter(r => r.enabled).length; } catch (_) { return 0; }
 }
 
 function getRDPClosedCount() {
-    const out = psRaw(
-        'Get-NetFirewallRule -Group \'@FirewallAPI.dll,-28752\' -Direction Inbound -Action Allow -Enabled False | Measure-Object | Select-Object -ExpandProperty Count'
-    );
-    try { return parseInt(out.trim(), 10) || 0; } catch (_) { return 0; }
-}
-
-function getRDPRuleNames(enabled) {
-    const flag = enabled ? 'True' : 'False';
-    const out = psRaw(
-        `Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow -Enabled ${flag} | Select-Object -ExpandProperty Name`
-    );
-    return out.split('\n').map(s => s.trim()).filter(Boolean);
+    try { return getRDPRulesRaw().filter(r => !r.enabled).length; } catch (_) { return 0; }
 }
 
 function enableRDPRules() {
-    // 启用当前处于「禁用」状态的 RDP 规则；返回实际尝试启用的数量
-    const names = getRDPRuleNames(false);
-    let count = 0;
-    for (const name of names) {
-        psRaw(`Enable-NetFirewallRule -Name '${name.replace(/'/g, "''")}'`);
-        count++;
+    // 启用当前处于「禁用」状态的 RDP 规则；返回实际启用的数量
+    const rules = getRDPRulesRaw().filter(r => !r.enabled);
+    for (const r of rules) {
+        psRaw(`Enable-NetFirewallRule -Name '${r.name.replace(/'/g, "''")}'`);
     }
+    let count = rules.length;
     // 兜底：若仍然没有任何启用的 RDP 规则，创建一条
-    if (getRDPRuleNames(true).length === 0) {
+    if (getRDPOpenCount() === 0) {
         psRaw("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'");
         count++;
     }
@@ -136,13 +135,11 @@ function enableRDPRules() {
 
 function disableRDPRules() {
     // 禁用当前处于「启用」状态的 RDP 规则（即关闭 3389 端口）；返回实际禁用的数量
-    const names = getRDPRuleNames(true);
-    let count = 0;
-    for (const name of names) {
-        psRaw(`Disable-NetFirewallRule -Name '${name.replace(/'/g, "''")}'`);
-        count++;
+    const rules = getRDPRulesRaw().filter(r => r.enabled);
+    for (const r of rules) {
+        psRaw(`Disable-NetFirewallRule -Name '${r.name.replace(/'/g, "''")}'`);
     }
-    return count;
+    return rules.length;
 }
 
 function getState() {
@@ -429,7 +426,10 @@ const server = http.createServer((req, res) => {
                 atomicWrite(STATE_FILE, JSON.stringify(state, null, 2));
                 // 清除可能存在的强制开启状态
                 try { fs.unlinkSync(FORCE_OPEN_FILE); } catch (_) {}
-                sendJson({ ok: true, closed, message: `RDP 端口已关闭（已禁用 ${closed} 条规则，不会自动恢复，需强制开启才能重新打开）` });
+                const closeMsg = closed > 0
+                    ? `RDP 端口已关闭（已禁用 ${closed} 条规则，不会自动恢复，需强制开启才能重新打开）`
+                    : `RDP 端口当前已处于关闭状态（不会自动恢复，需强制开启才能重新打开）`;
+                sendJson({ ok: true, closed, message: closeMsg });
                 cache.ts = 0; setTimeout(() => refreshStatusAsync(), 2000);
             } finally {
                 closeInProgress = false;
