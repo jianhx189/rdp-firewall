@@ -5,6 +5,8 @@
 //   3. 强制取消：后端验证密码后删除 force_open.json
 //   4. 端口状态用防火墙规则状态判断（更准确）
 //   5. UI 优化：按钮状态动态联动、强制开启倒计时显示
+// v3.8 变更（2026-07-21）：启动自清理遗留的「wry合金防护-兜底RDP」重复规则；
+//   启用规则仅在整组为空（原厂规则被误删）时才新建兜底规则，避免重复堆积
 
 const http = require('http');
 const fs = require('fs');
@@ -125,8 +127,9 @@ function enableRDPRules() {
         psRaw(`Enable-NetFirewallRule -Name '${r.name.replace(/'/g, "''")}'`);
     }
     let count = rules.length;
-    // 兜底：若仍然没有任何启用的 RDP 规则，创建一条
-    if (getRDPOpenCount() === 0) {
+    // 兜底：仅当整组规则都不存在（原厂 RDP 规则被误删）时才新建一条，
+    // 避免上次「启用失败」后反复堆积重复兜底规则
+    if (getRDPRulesRaw().length === 0) {
         psRaw("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'");
         count++;
     }
@@ -140,6 +143,25 @@ function disableRDPRules() {
         psRaw(`Disable-NetFirewallRule -Name '${r.name.replace(/'/g, "''")}'`);
     }
     return rules.length;
+}
+
+// 清理测试/历史遗留的兜底规则：仅当原厂 RDP 规则（RemoteDesktop-*）仍存在时才移除，
+// 防止重复堆积（每次「启用失败」会新建一条同名兜底规则）。需 SYSTEM 权限才能 Remove。
+function cleanupFallbackRules() {
+    try {
+        const hasOriginal = getRDPRulesRaw().some(r => r.name && r.name.startsWith('RemoteDesktop'));
+        if (!hasOriginal) return 0;
+        const out = psRaw("Get-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' | Select-Object Name | ConvertTo-Json -Compress");
+        let arr = [];
+        try { arr = JSON.parse(out); } catch (_) { return 0; }
+        if (!Array.isArray(arr)) arr = (arr && arr.Name) ? [arr] : [];
+        let removed = 0;
+        for (const r of arr) {
+            psRaw(`Remove-NetFirewallRule -Name '${String(r.Name).replace(/'/g, "''")}'`);
+            removed++;
+        }
+        return removed;
+    } catch (_) { return 0; }
 }
 
 function getState() {
@@ -326,6 +348,11 @@ function quickInitCache() {
 
 // 初始填充
 quickInitCache();
+// 启动时清理遗留的兜底规则（仅 SYSTEM 身份下能 Remove），保持规则列表干净
+try {
+    const removed = cleanupFallbackRules();
+    if (removed > 0) console.log(`已清理 ${removed} 条遗留兜底规则`);
+} catch (_) {}
 // 后台异步刷新（含 PowerShell 防火墙规则查询）
 setTimeout(refreshStatusAsync, 2000);
 setInterval(refreshStatusAsync, CACHE_INTERVAL);
