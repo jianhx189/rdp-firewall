@@ -89,10 +89,10 @@ function webSourceMtime() {
 }
 
 function readStamp() {
-    try { return parseInt(fs.readFileSync(STAMP_FILE, 'utf8').trim(), 10) || 0; } catch (_) { return 0; }
+    try { return parseFloat(fs.readFileSync(STAMP_FILE, 'utf8').trim()) || 0; } catch (_) { return 0; }
 }
 function writeStamp(m) {
-    try { fs.writeFileSync(STAMP_FILE, String(m), 'utf8'); } catch (_) {}
+    try { fs.writeFileSync(STAMP_FILE, String(Math.floor(m)), 'utf8'); } catch (_) {}
 }
 
 function startWeb() {
@@ -114,7 +114,7 @@ function startWeb() {
 
 async function main() {
     const listening = await checkPort(PORT);
-    const srcMtime = webSourceMtime();
+    const srcMtime = Math.floor(webSourceMtime());
     const stamp = readStamp();
 
     if (!listening) {
