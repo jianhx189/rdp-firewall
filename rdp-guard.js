@@ -27,8 +27,8 @@ const path = require('path');
 // ============================================================================
 // 常量配置
 // ============================================================================
-const THRESHOLD            = 3;       // 触发关闭端口的同 IP 失败次数阈值
-const LOOKBACK_SECONDS     = 60;     // 回溯时间窗口（秒）
+const THRESHOLD            = 5;       // 触发关闭端口的同 IP 失败次数阈值
+const LOOKBACK_SECONDS     = 30;     // 回溯时间窗口（秒）
 const REOPEN_MINUTES       = 5;      // 端口关闭后自动恢复时间（分钟）
 const FORCE_OPEN_DURATION   = 5 * 60 * 1000;  // forceOpen 有效期（毫秒）
 const LOG_MAX_LINES        = 500;    // 日志最大保留行数

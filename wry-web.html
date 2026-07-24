@@ -3,924 +3,712 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>wry合金防护 v3 - RDP 实时监控</title>
+<title>wry合金防护 - RDP 安全监控</title>
 <style>
 :root {
-    --bg: #0d1117;
-    --bg2: #161b22;
-    --bg3: #21262d;
-    --bg4: #30363d;
-    --text: #e6edf3;
-    --text2: #8b949e;
-    --text3: #6e7681;
-    --green: #3fb950;
-    --green-dim: rgba(63,185,80,0.15);
-    --red: #f85149;
-    --red-dim: rgba(248,81,73,0.15);
-    --blue: #58a6ff;
-    --blue-dim: rgba(88,166,255,0.15);
-    --yellow: #d29922;
-    --yellow-dim: rgba(210,153,34,0.15);
-    --border: #30363d;
-    --radius: 10px;
+  --bg: #0b0e14;
+  --surface: #131821;
+  --surface2: #1c2330;
+  --border: #283040;
+  --border-light: #354050;
+  --text: #e8edf5;
+  --text2: #8a96a8;
+  --text3: #5a6678;
+  --green: #34d399;
+  --green-bg: rgba(52,211,153,0.12);
+  --red: #f87171;
+  --red-bg: rgba(248,113,113,0.12);
+  --blue: #60a5fa;
+  --blue-bg: rgba(96,165,250,0.12);
+  --yellow: #fbbf24;
+  --yellow-bg: rgba(251,191,36,0.12);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 4px 20px rgba(0,0,0,0.3);
 }
-
 * { margin: 0; padding: 0; box-sizing: border-box; }
-
 body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
-    min-height: 100vh;
-    line-height: 1.6;
-    font-size: 14px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.6 -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  min-height: 100vh;
 }
+.container { max-width: 1040px; margin: 0 auto; padding: 24px 16px; }
 
-.container { max-width: 1100px; margin: 0 auto; padding: 28px 20px; }
-
-/* Header */
+/* ===== Header ===== */
 .header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 28px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 24px; padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
 }
-.header-left { display: flex; align-items: center; gap: 12px; }
-.shield { font-size: 32px; }
-.header h1 { font-size: 22px; font-weight: 700; }
-.badge {
-    font-size: 11px;
-    background: var(--bg3);
-    color: var(--text2);
-    padding: 3px 10px;
-    border-radius: 20px;
-    border: 1px solid var(--border);
-}
+.header-left { display: flex; align-items: center; gap: 14px; }
+.header-left .logo { width: 40px; height: 40px; background: linear-gradient(135deg,#34d399,#059669); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px; color:#fff; font-weight:700; }
+.header h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.3px; }
+.header h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 8px; }
 .header-right { text-align: right; }
-.clock { font-size: 22px; font-weight: 700; font-family: 'Consolas', monospace; color: var(--text2); }
+.clock { font-size: 20px; font-weight: 600; font-family: 'Consolas', monospace; color: var(--text2); }
 .clock-label { font-size: 11px; color: var(--text3); }
 
-/* Status bar */
-.status-hero {
-    border-radius: 16px;
-    padding: 28px 32px;
-    margin-bottom: 20px;
-    display: flex;
-    align-items: center;
-    gap: 20px;
-    border: 2px solid transparent;
-    transition: all 0.4s;
+/* ===== Status Banner ===== */
+.status-banner {
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  margin-bottom: 20px;
+  display: flex; align-items: center; gap: 16px;
+  border: 2px solid transparent;
+  transition: all 0.3s;
+  box-shadow: var(--shadow);
 }
-.status-hero.NORMAL    { background: var(--green-dim);  border-color: var(--green); }
-.status-hero.BLOCKED   { background: var(--red-dim);    border-color: var(--red); border-width: 3px; animation: alert-pulse 1.6s ease-in-out infinite; }
-.status-hero.FORCE_OPEN { background: var(--blue-dim);  border-color: var(--blue); }
-/* 受到攻击时，状态标题放大大字显示 */
-.status-hero.BLOCKED .status-info h2 { font-size: 30px; font-weight: 900; letter-spacing: 1px; }
-@keyframes alert-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(248,81,73,0.55); }
-    50%      { box-shadow: 0 0 0 14px rgba(248,81,73,0); }
+.status-banner.open    { background: var(--green-bg);  border-color: var(--green); }
+.status-banner.closed  { background: var(--red-bg);    border-color: var(--red); }
+.status-banner.force   { background: var(--blue-bg);   border-color: var(--blue); }
+.status-banner.manual  { background: var(--yellow-bg); border-color: var(--yellow); }
+
+.status-banner .icon { font-size: 44px; line-height: 1; flex-shrink: 0; }
+.status-banner .info { flex: 1; min-width: 0; }
+.status-banner .info h2 { font-size: 20px; font-weight: 700; margin-bottom: 2px; }
+.status-banner .info p { font-size: 13px; color: var(--text2); }
+.status-banner .countdown {
+  text-align: right; flex-shrink: 0;
+  min-width: 100px;
+}
+.status-banner .countdown .num { font-size: 36px; font-weight: 800; font-family: 'Consolas',monospace; line-height: 1; }
+.status-banner .countdown .label { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+/* ===== Health Warnings ===== */
+.health-bar {
+  border-radius: var(--radius-sm);
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  border: 1px solid;
+  display: flex; align-items: center; gap: 10px;
+}
+.health-bar.critical { background: var(--red-bg); border-color: var(--red); color: var(--red); }
+.health-bar.warning  { background: var(--yellow-bg); border-color: var(--yellow); color: var(--yellow); }
+.health-bar .items { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.health-bar .items span {
+  color: var(--text); font-size: 12px;
+  padding-left: 8px;
 }
 
-.status-icon { font-size: 56px; line-height: 1; flex-shrink: 0; }
-.status-info { flex: 1; }
-.status-info h2 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
-.status-info p { font-size: 13px; color: var(--text2); max-width: 500px; }
+/* ===== Metric Cards ===== */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.metric {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 12px;
+  text-align: center;
+}
+.metric .val { font-size: 24px; font-weight: 700; line-height: 1.2; }
+.metric .label { font-size: 11px; color: var(--text3); margin-top: 4px; }
+.metric .val.green  { color: var(--green); }
+.metric .val.red    { color: var(--red); }
+.metric .val.blue   { color: var(--blue); }
+.metric .val.yellow { color: var(--yellow); }
 
-.status-countdown {
-    text-align: right;
-    flex-shrink: 0;
-}
-.countdown-num {
-    font-size: 48px;
-    font-weight: 900;
-    font-family: 'Consolas', monospace;
-    line-height: 1;
-}
-.countdown-label { font-size: 11px; color: var(--text2); margin-top: 4px; }
-
-/* Stat cards */
-.stats {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-    margin-bottom: 20px;
-}
-.stat {
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 16px;
-    text-align: center;
-    transition: border-color 0.2s;
-}
-.stat:hover { border-color: var(--text3); }
-.stat-icon { font-size: 20px; margin-bottom: 6px; }
-.stat-val { font-size: 26px; font-weight: 700; }
-.stat-label { font-size: 11px; color: var(--text2); margin-top: 4px; }
-.stat.green .stat-val { color: var(--green); }
-.stat.red .stat-val { color: var(--red); }
-.stat.blue .stat-val { color: var(--blue); }
-.stat.yellow .stat-val { color: var(--yellow); }
-
-/* Buttons */
-.btn-row { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+/* ===== Buttons ===== */
+.actions { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
 .btn {
-    padding: 11px 28px;
-    border-radius: var(--radius);
-    font-size: 14px;
-    font-weight: 700;
-    cursor: pointer;
-    border: 2px solid transparent;
-    transition: all 0.2s;
-    font-family: inherit;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
+  padding: 10px 24px;
+  border-radius: var(--radius-sm);
+  font-size: 14px; font-weight: 600;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.15s;
+  font-family: inherit;
+  display: inline-flex; align-items: center; gap: 6px;
 }
-.btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
-.btn:active { transform: translateY(0); }
-.btn-open    { background: var(--green); color: #000; }
-.btn-open:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
-.btn-red     { background: transparent; color: var(--red); border-color: var(--red); }
-.btn-red:hover { background: var(--red-dim); }
-.btn-blue    { background: transparent; color: var(--blue); border-color: var(--blue); }
-.btn-blue:hover { background: var(--blue-dim); }
-.btn-gray    { background: var(--bg3); color: var(--text2); border-color: var(--border); }
-.btn-gray:hover { border-color: var(--text3); color: var(--text); }
-.btn-hint { font-size: 12px; color: var(--text3); align-self: center; }
+.btn:hover { filter: brightness(1.15); transform: translateY(-1px); }
+.btn:active { transform: translateY(0); filter: brightness(0.95); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; filter: none; transform: none; }
+.btn-solid-green  { background: var(--green); color: #000; }
+.btn-outline-red  { background: transparent; color: var(--red); border-color: var(--red); }
+.btn-outline-blue { background: transparent; color: var(--blue); border-color: var(--blue); }
+.btn-outline-gray { background: transparent; color: var(--text2); border-color: var(--border); }
+.btn-outline-gray:hover { border-color: var(--text3); }
 
-/* Info box */
-.info {
-    background: var(--bg2);
-    border-radius: var(--radius);
-    padding: 14px 18px;
-    margin-bottom: 20px;
-    font-size: 13px;
-    color: var(--text2);
-    border-left: 4px solid var(--text3);
-    line-height: 1.8;
+/* ===== Info Boxes ===== */
+.info-box {
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  font-size: 13px; color: var(--text2); line-height: 1.7;
+  border-left: 4px solid var(--border);
+  background: var(--surface);
 }
-.info.green  { border-left-color: var(--green); background: var(--green-dim); }
-.info.red    { border-left-color: var(--red);   background: var(--red-dim); }
-.info.blue   { border-left-color: var(--blue);  background: var(--blue-dim); }
-.info strong { color: var(--text); }
+.info-box.green  { border-left-color: var(--green);  background: var(--green-bg); }
+.info-box.red    { border-left-color: var(--red);    background: var(--red-bg); }
+.info-box.blue   { border-left-color: var(--blue);   background: var(--blue-bg); }
+.info-box.yellow { border-left-color: var(--yellow); background: var(--yellow-bg); }
+.info-box strong { color: var(--text); }
 
-/* Tabs */
-.tabs { display: flex; gap: 2px; margin-bottom: 0; border-bottom: 1px solid var(--border); }
-.tab {
-    padding: 10px 22px;
-    cursor: pointer;
-    font-size: 13px;
-    color: var(--text2);
-    border: none;
-    background: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    font-family: inherit;
-    font-weight: 500;
-    transition: all 0.2s;
+/* ===== Tabs ===== */
+.tab-bar { display: flex; gap: 0; margin-bottom: 0; border-bottom: 1px solid var(--border); }
+.tab-item {
+  padding: 10px 20px;
+  cursor: pointer; font-size: 13px; color: var(--text2);
+  border: none; background: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  font-family: inherit; font-weight: 500;
+  transition: all 0.15s;
 }
-.tab:hover { color: var(--text); }
-.tab.active { color: var(--text); border-bottom-color: var(--blue); font-weight: 700; }
+.tab-item:hover { color: var(--text); }
+.tab-item.active { color: var(--text); border-bottom-color: var(--blue); font-weight: 700; }
 
-/* Panels */
-.panel { display: none; }
-.panel.active { display: block; }
+/* ===== Panels ===== */
+.panel-wrap { display: none; }
+.panel-wrap.active { display: block; }
 
-/* Cards */
+/* ===== Card ===== */
 .card {
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    margin-bottom: 16px;
-    overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-top: 16px;
+  overflow: hidden;
 }
 .card-header {
-    padding: 12px 18px;
-    border-bottom: 1px solid var(--border);
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--text2);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px; font-weight: 600; color: var(--text2);
+  display: flex; align-items: center; gap: 6px;
 }
 .card-body { padding: 0; }
 
-/* Table */
+/* ===== Table ===== */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th {
-    text-align: left;
-    padding: 10px 18px;
-    color: var(--text2);
-    border-bottom: 1px solid var(--border);
-    font-weight: 600;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    background: var(--bg);
+  text-align: left; padding: 8px 16px;
+  color: var(--text3); font-weight: 600; font-size: 11px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
 }
-td { padding: 12px 18px; border-bottom: 1px solid var(--border); }
+td { padding: 10px 16px; border-bottom: 1px solid var(--border); }
 tr:last-child td { border-bottom: none; }
-tr:hover td { background: rgba(255,255,255,0.02); }
-
-.td-ip { font-family: 'Consolas', monospace; color: #f0883e; font-size: 13px; }
-.td-num { font-weight: 700; color: var(--red); font-size: 15px; }
+tr:hover td { background: rgba(255,255,255,0.03); }
+.td-ip { font-family: 'Consolas', monospace; color: #fbbf24; font-size: 13px; }
+.td-num { font-weight: 700; color: var(--red); font-size: 14px; }
 .td-time { color: var(--text2); font-size: 12px; }
-.tag { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 700; }
-.tag-green  { background: var(--green-dim);  color: var(--green); }
-.tag-red    { background: var(--red-dim);    color: var(--red); }
-.tag-blue   { background: var(--blue-dim);  color: var(--blue); }
-.tag-yellow { background: var(--yellow-dim); color: var(--yellow); }
-.tag-gray   { background: var(--bg3); color: var(--text2); }
 
-.empty { text-align: center; padding: 48px 20px; color: var(--text3); font-size: 14px; }
-.empty-icon { font-size: 40px; margin-bottom: 12px; }
-
-/* Firewall rules */
-.rule { display: flex; justify-content: space-between; align-items: center; padding: 10px 18px; border-bottom: 1px solid var(--border); font-size: 12px; }
-.rule:last-child { border-bottom: none; }
-.rule-name { font-family: 'Consolas', monospace; color: var(--text); }
-.rule-on  { color: var(--green); font-weight: 700; }
-.rule-off { color: var(--red); font-weight: 700; }
-
-/* Log */
-.log-view {
-    font-family: 'Consolas', 'Courier New', monospace;
-    font-size: 12px;
-    background: #000;
-    color: #c9d1d9;
-    padding: 16px;
-    max-height: 420px;
-    overflow-y: auto;
-    line-height: 1.9;
-    white-space: pre-wrap;
-    word-break: break-all;
+.tag {
+  display: inline-block; padding: 2px 8px; border-radius: 6px;
+  font-size: 11px; font-weight: 600;
 }
-.log-view .danger  { color: #ff7b72; }
-.log-view .success { color: #7ee787; }
-.log-view .warning { color: #e3b341; }
-.log-view .info    { color: #79c0ff; }
+.tag-green  { background: var(--green-bg);  color: var(--green); }
+.tag-red    { background: var(--red-bg);    color: var(--red); }
+.tag-blue   { background: var(--blue-bg);   color: var(--blue); }
+.tag-yellow { background: var(--yellow-bg); color: var(--yellow); }
+.tag-gray   { background: var(--surface2);  color: var(--text2); }
 
-/* Modal */
-.modal-bg {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.75);
-    z-index: 100;
-    align-items: center;
-    justify-content: center;
+.empty-state {
+  text-align: center; padding: 40px 20px; color: var(--text3);
 }
-.modal-bg.show { display: flex; }
-.modal {
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 32px;
-    width: 420px;
-    max-width: 90vw;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-}
-.modal-icon { font-size: 48px; text-align: center; margin-bottom: 16px; }
-.modal h3 { text-align: center; font-size: 20px; margin-bottom: 12px; }
-.modal p { font-size: 13px; color: var(--text2); margin-bottom: 16px; line-height: 1.7; }
-.modal .warn { color: var(--yellow); font-weight: 600; }
-.modal .pwd-label { font-size: 12px; color: var(--text3); margin-bottom: 8px; display: block; }
-.modal input {
-    width: 100%;
-    padding: 12px 14px;
-    background: var(--bg3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    color: var(--text);
-    font-size: 14px;
-    outline: none;
-    margin-bottom: 16px;
-    font-family: inherit;
-}
-.modal input:focus { border-color: var(--blue); }
-.modal-btns { display: flex; gap: 10px; justify-content: flex-end; }
-.modal .btn { padding: 10px 24px; }
-.btn-dark { background: var(--bg3); color: var(--text2); border-color: var(--border); }
-.btn-dark:hover { color: var(--text); border-color: var(--text3); }
+.empty-state .icon { font-size: 36px; margin-bottom: 8px; }
 
-/* Toast */
+/* ===== Firewall Rule List ===== */
+.rule-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 9px 16px; border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.rule-row:last-child { border-bottom: none; }
+.rule-row .name { font-family: 'Consolas',monospace; color: var(--text); }
+.rule-row .on  { color: var(--green); font-weight: 600; }
+.rule-row .off { color: var(--red); font-weight: 600; }
+
+/* ===== Log ===== */
+.log-box {
+  font-family: 'Consolas','Courier New',monospace;
+  font-size: 12px; background: #000;
+  color: #c9d1d9; padding: 14px;
+  max-height: 400px; overflow-y: auto;
+  line-height: 1.8;
+  white-space: pre-wrap; word-break: break-all;
+}
+.log-box .danger  { color: #ff7b72; }
+.log-box .success { color: #7ee787; }
+.log-box .warning { color: #e3b341; }
+.log-box .info    { color: #79c0ff; }
+
+/* ===== Modal ===== */
+.modal-mask {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 100;
+  align-items: center; justify-content: center;
+}
+.modal-mask.show { display: flex; }
+.modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  width: 400px; max-width: 90vw;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.modal-box .icon { font-size: 44px; text-align: center; margin-bottom: 12px; }
+.modal-box h3 { text-align: center; font-size: 18px; margin-bottom: 10px; }
+.modal-box .desc { font-size: 13px; color: var(--text2); margin-bottom: 12px; line-height: 1.6; }
+.modal-box .warn { color: var(--yellow); font-weight: 600; }
+.modal-box label { font-size: 12px; color: var(--text3); margin-bottom: 6px; display: block; }
+.modal-box input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  margin-bottom: 14px;
+  font-family: inherit;
+}
+.modal-box input:focus { border-color: var(--blue); }
+.modal-box .btns { display: flex; gap: 10px; justify-content: flex-end; }
+.modal-box .btns .btn { padding: 8px 20px; }
+
+/* ===== Toast ===== */
 #toast {
-    position: fixed;
-    bottom: 28px;
-    right: 28px;
-    padding: 12px 24px;
-    border-radius: var(--radius);
-    font-size: 14px;
-    font-weight: 700;
-    z-index: 200;
-    display: none;
-    animation: toastIn 0.3s ease;
+  position: fixed;
+  bottom: 24px; right: 24px;
+  padding: 12px 20px;
+  border-radius: var(--radius-sm);
+  font-size: 14px; font-weight: 600;
+  z-index: 200;
+  display: none;
+  animation: slideIn 0.25s ease;
+  box-shadow: var(--shadow);
 }
 #toast.show { display: block; }
-#toast.ok    { background: var(--green); color: #000; }
-#toast.err   { background: var(--red); color: #fff; }
-@keyframes toastIn {
-    from { transform: translateX(120%); opacity: 0; }
-    to   { transform: translateX(0); opacity: 1; }
+#toast.ok  { background: var(--green); color: #000; }
+#toast.err { background: var(--red); color: #fff; }
+@keyframes slideIn {
+  from { transform: translateX(80px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
 }
 
-@media (max-width: 700px) {
-    .stats { grid-template-columns: 1fr 1fr; }
-    .status-hero { flex-direction: column; text-align: center; }
-    .status-countdown { text-align: center; }
-}
-
-/* Health warning banner */
-.health-banner {
-    background: var(--red-dim);
-    border: 2px solid var(--red);
-    border-radius: var(--radius);
-    padding: 14px 18px;
-    margin-bottom: 20px;
-    animation: pulse-border 2s ease-in-out infinite;
-}
-.health-banner.warning {
-    background: var(--yellow-dim);
-    border-color: var(--yellow);
-    animation: none;
-}
-.health-banner .health-title {
-    font-weight: 700;
-    font-size: 15px;
-    color: var(--red);
-    margin-bottom: 8px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.health-banner.warning .health-title { color: var(--yellow); }
-.health-banner .health-item {
-    font-size: 13px;
-    color: var(--text);
-    padding: 4px 0 4px 24px;
-    line-height: 1.5;
-}
-@keyframes pulse-border {
-    0%, 100% { border-color: var(--red); }
-    50% { border-color: rgba(248,81,73,0.3); }
+@media (max-width: 720px) {
+  .metrics { grid-template-columns: repeat(2,1fr); }
+  .status-banner { flex-direction: column; text-align: center; }
+  .status-banner .countdown { text-align: center; }
 }
 </style>
 </head>
 <body>
 <div class="container">
 
-    <!-- Health warnings -->
-    <div id="health-warnings"></div>
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">W</div>
+      <div>
+        <h1>wry合金防护 <small>RDP 安全网关</small></h1>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="clock" id="clock">--:--:--</div>
+      <div class="clock-label">最后更新</div>
+    </div>
+  </div>
 
-    <!-- Header -->
-    <div class="header">
-        <div class="header-left">
-            <span class="shield" id="shield">🛡</span>
-            <div>
-                <h1>wry合金防护 <span class="badge">v3</span></h1>
-            </div>
-        </div>
-        <div class="header-right">
-            <div class="clock" id="clock">--:--:--</div>
-            <div class="clock-label">最后更新</div>
-        </div>
-    </div>
+  <!-- Health warnings -->
+  <div id="health-warnings"></div>
 
-    <!-- Status hero -->
-    <div class="status-hero" id="status-hero">
-        <div class="status-icon" id="status-icon">🛡</div>
-        <div class="status-info">
-            <h2 id="status-title">加载中</h2>
-            <p id="status-desc">正在连接后台服务...</p>
-        </div>
-        <div class="status-countdown">
-            <div class="countdown-num" id="countdown-num">--</div>
-            <div class="countdown-label" id="countdown-label">等待状态</div>
-        </div>
+  <!-- Status Banner -->
+  <div class="status-banner" id="status-banner">
+    <div class="icon" id="status-icon">🛡</div>
+    <div class="info">
+      <h2 id="status-title">加载中</h2>
+      <p id="status-desc">正在连接后台服务...</p>
     </div>
+    <div class="countdown">
+      <div class="num" id="countdown-num">--</div>
+      <div class="label" id="countdown-label">等待状态</div>
+    </div>
+  </div>
 
-    <!-- Stat cards -->
-    <div class="stats">
-        <div class="stat green">
-            <div class="stat-icon">🔓</div>
-            <div class="stat-val" id="stat-open">-</div>
-            <div class="stat-label">已启用规则</div>
-        </div>
-        <div class="stat red">
-            <div class="stat-icon">🔒</div>
-            <div class="stat-val" id="stat-closed">-</div>
-            <div class="stat-label">已禁用规则</div>
-        </div>
-        <div class="stat yellow">
-            <div class="stat-icon">⚠</div>
-            <div class="stat-val" id="stat-attacks">0</div>
-            <div class="stat-label">今日攻击</div>
-        </div>
-        <div class="stat blue">
-            <div class="stat-icon">💥</div>
-            <div class="stat-val" id="stat-fails">0</div>
-            <div class="stat-label">今日失败总数</div>
-        </div>
-    </div>
+  <!-- Metrics -->
+  <div class="metrics">
+    <div class="metric"><div class="val green" id="m-open">-</div><div class="label">已启用规则</div></div>
+    <div class="metric"><div class="val red" id="m-closed">-</div><div class="label">已禁用规则</div></div>
+    <div class="metric"><div class="val yellow" id="m-attacks">0</div><div class="label">今日攻击事件</div></div>
+    <div class="metric"><div class="val red" id="m-fails">0</div><div class="label">今日失败总数</div></div>
+    <div class="metric"><div class="val blue" id="m-ips">0</div><div class="label">攻击 IP 数</div></div>
+  </div>
 
-    <!-- Buttons -->
-    <div class="btn-row">
-        <button class="btn btn-red" id="btn-close" onclick="showModal('modal-close')">
-            ⛔ 关闭 RDP 端口
-        </button>
-        <button class="btn btn-blue" id="btn-open" onclick="showModal('modal-open')">
-            🚀 强制开启 RDP
-        </button>
-        <span class="btn-hint" id="btn-hint"></span>
-    </div>
+  <!-- Actions -->
+  <div class="actions">
+    <button class="btn btn-outline-red"  id="btn-close" onclick="showModal('modal-close')">
+      ⛔ 关闭 RDP 端口
+    </button>
+    <button class="btn btn-outline-blue" id="btn-open"  onclick="showModal('modal-open')">
+      🚀 强制开启 RDP
+    </button>
+    <span style="font-size:12px;color:var(--text3);margin-left:auto" id="btn-hint"></span>
+  </div>
 
-    <!-- Info -->
-    <div class="info green" id="info-normal">
-        <strong>🛡 监控中</strong> — RDP 端口正常开放，系统每分钟检测一次暴力破解攻击。
-        检测到 <strong>3 次</strong>及以上同 IP 登录失败（60 秒窗口），自动关闭端口 5 分钟。
-        <br><strong>内网 IP 全部放行</strong>（10.x.x.x、172.16-31.x.x、192.168.x.x），跳板机 192.168.3.88 参与检测（不放行）。
-        <br>无攻击时，你可随时点击「关闭 RDP 端口」手动关闭。
-    </div>
-    <div class="info red" id="info-blocked" style="display:none">
-        <strong>🚨 受到攻击，端口已关闭！</strong> — 检测到暴力破解，RDP 端口已被防火墙规则关闭，外部无法连接。
-        <strong id="info-blocked-countdown">5 分钟</strong>后自动恢复；如确需立即连接，使用「强制开启 RDP」（开启 5 分钟）。
-    </div>
-    <div class="info blue" id="info-force" style="display:none">
-        <strong>✅ 强制开启中</strong> — RDP 端口被你临时强制开启，防护暂停。
-        到期后自动关闭；若届时仍在遭攻击，将按规则重新关闭端口。
-    </div>
-    <div class="info yellow" id="info-manual" style="display:none">
-        <strong>🔒 端口已手动关闭</strong> — 由你手动关闭，<strong>不会自动恢复</strong>。
-        如需重新开放，使用「强制开启 RDP」。
-    </div>
+  <!-- Info boxes (one shown at a time) -->
+  <div class="info-box green"  id="box-normal">
+    <strong>🛡 监控中</strong> — RDP 端口正常开放。检测到同 IP <strong>5 次</strong>以上登录失败（30 秒窗口）自动关闭端口 5 分钟。
+    内网 IP 全部放行，跳板机 192.168.3.88 参与检测。
+  </div>
+  <div class="info-box red"    id="box-blocked" style="display:none">
+    <strong>🚨 受到攻击，端口已关闭！</strong> 检测到暴力破解，RDP 已封禁。
+    <strong id="info-blocked-countdown">5 分钟</strong>后自动恢复。
+  </div>
+  <div class="info-box blue"   id="box-force" style="display:none">
+    <strong>✅ 强制开启中</strong> — RDP 端口已临时开放，防护暂停。
+    到期后自动关闭；若仍遭攻击将重新封禁。
+  </div>
+  <div class="info-box yellow" id="box-manual" style="display:none">
+    <strong>🔒 端口已手动关闭</strong> — 不会自动恢复。
+    点击「强制开启 RDP」重新打开。
+  </div>
 
-    <!-- Tabs -->
-    <div class="tabs">
-        <button class="tab active" onclick="switchTab('overview')">📊 防护概览</button>
-        <button class="tab" onclick="switchTab('history')">📋 攻击历史</button>
-        <button class="tab" onclick="switchTab('rules')">🛡 防火墙规则</button>
-        <button class="tab" onclick="switchTab('log')">📝 操作日志</button>
+  <!-- Tabs -->
+  <div class="tab-bar">
+    <button class="tab-item active" onclick="switchTab('overview')">📊 概览</button>
+    <button class="tab-item" onclick="switchTab('history')">📋 攻击历史</button>
+    <button class="tab-item" onclick="switchTab('rules')">🛡 防火墙规则</button>
+    <button class="tab-item" onclick="switchTab('log')">📝 操作日志</button>
+  </div>
+
+  <!-- Panel: Overview -->
+  <div class="panel-wrap active" id="panel-overview">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px;">
+      <div class="card">
+        <div class="card-header">👤 被爆破用户名 TOP 10</div>
+        <div class="card-body" id="overview-users"></div>
+      </div>
+      <div class="card">
+        <div class="card-header">🌐 攻击 IP 排行 TOP 10</div>
+        <div class="card-body" id="overview-ips"></div>
+      </div>
     </div>
-
-    <!-- Panel: Overview -->
-    <div class="panel active" id="panel-overview">
-        <div class="stats" style="grid-template-columns: repeat(3,1fr); margin-top: 16px;">
-            <div class="stat red">
-                <div class="stat-icon">👤</div>
-                <div class="stat-val" id="stat-user-count">0</div>
-                <div class="stat-label">被爆破用户名数</div>
-            </div>
-            <div class="stat yellow">
-                <div class="stat-icon">🌐</div>
-                <div class="stat-val" id="stat-ip-count">0</div>
-                <div class="stat-label">攻击 IP 数</div>
-            </div>
-            <div class="stat blue">
-                <div class="stat-icon">📋</div>
-                <div class="stat-val" id="stat-event-count">0</div>
-                <div class="stat-label">攻击事件数</div>
-            </div>
-        </div>
-
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;">
-            <div class="card">
-                <div class="card-header">👤 被爆破用户名 TOP 10</div>
-                <div id="overview-users"></div>
-            </div>
-            <div class="card">
-                <div class="card-header">🌐 攻击 IP 排行 TOP 10</div>
-                <div id="overview-ips"></div>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-header">📋 最近攻击记录</div>
-            <div id="overview-table"></div>
-        </div>
+    <div class="card">
+      <div class="card-header">📋 最近攻击记录</div>
+      <div class="card-body" id="overview-table"></div>
     </div>
+  </div>
 
-    <!-- Panel: History -->
-    <div class="panel" id="panel-history">
-        <div class="card">
-            <div class="card-header">📋 今日攻击历史</div>
-            <div id="history-table"></div>
-        </div>
+  <!-- Panel: History -->
+  <div class="panel-wrap" id="panel-history">
+    <div class="card">
+      <div class="card-header">📋 今日攻击历史</div>
+      <div class="card-body" id="history-table"></div>
     </div>
+  </div>
 
-    <!-- Panel: Rules -->
-    <div class="panel" id="panel-rules">
-        <div class="card">
-            <div class="card-header">🛡 RDP 防火墙规则状态</div>
-            <div id="rules-body"></div>
-        </div>
+  <!-- Panel: Rules -->
+  <div class="panel-wrap" id="panel-rules">
+    <div class="card">
+      <div class="card-header">🛡 RDP 防火墙规则</div>
+      <div class="card-body" id="rules-body"></div>
     </div>
+  </div>
 
-    <!-- Panel: Log -->
-    <div class="panel" id="panel-log">
-        <div class="card">
-            <div class="card-header">
-                📝 操作日志
-                <span style="margin-left:auto;font-size:11px;color:var(--text3)">自动刷新 · 每 5 秒</span>
-            </div>
-            <div class="log-view" id="log-view"></div>
-        </div>
+  <!-- Panel: Log -->
+  <div class="panel-wrap" id="panel-log">
+    <div class="card">
+      <div class="card-header">
+        📝 操作日志
+        <span style="margin-left:auto;font-size:11px;color:var(--text3)">每 5 秒刷新</span>
+      </div>
+      <div class="log-box" id="log-view"></div>
     </div>
+  </div>
 
 </div>
 
-<!-- Modal: Open RDP -->
-<div class="modal-bg" id="modal-open">
-    <div class="modal">
-        <div class="modal-icon">🚀</div>
-        <h3>强制开启 RDP 端口</h3>
-        <p>此操作将<strong>立即启用所有 RDP 防火墙规则</strong>，使 RDP 端口可从外部访问，有效期 <strong>5 分钟</strong>。到期后若仍在遭攻击，将按规则重新关闭端口。</p>
-        <p class="warn">⚠️ 请确认是你本人操作</p>
-        <label class="pwd-label">输入密码确认身份：</label>
-        <input type="password" id="pwd-open" placeholder="请输入后端密码" onkeydown="if(event.key==='Enter')doOpen()">
-        <div class="modal-btns">
-            <button class="btn btn-dark" onclick="hideModal('open')">取消</button>
-            <button class="btn btn-open" onclick="doOpen()">确认开启</button>
-        </div>
+<!-- Modal: Open -->
+<div class="modal-mask" id="modal-open">
+  <div class="modal-box">
+    <div class="icon">🚀</div>
+    <h3>强制开启 RDP 端口</h3>
+    <div class="desc">启用所有 RDP 防火墙规则，开放端口 <strong>5 分钟</strong>。到期后若仍在遭攻击将重新封禁。</div>
+    <p class="warn" style="font-size:12px;margin-bottom:10px;">⚠️ 请确认是你本人操作</p>
+    <label>输入密码确认身份</label>
+    <input type="password" id="pwd-open" placeholder="输入后端密码" onkeydown="if(event.key==='Enter')doOpen()">
+    <div class="btns">
+      <button class="btn btn-outline-gray" onclick="hideModal('open')">取消</button>
+      <button class="btn btn-solid-green" onclick="doOpen()">确认开启</button>
     </div>
+  </div>
 </div>
 
-<!-- Modal: Close RDP -->
-<div class="modal-bg" id="modal-close">
-    <div class="modal">
-        <div class="modal-icon">⛔</div>
-        <h3>关闭 RDP 端口</h3>
-        <p>此操作将<strong>立即禁用所有 RDP 防火墙规则</strong>，关闭 RDP 访问。</p>
-        <p class="warn">⚠️ 端口将保持关闭，直到你使用「强制开启 RDP」重新打开（不会自动恢复）。请确认是你本人操作。</p>
-        <label class="pwd-label">输入密码确认身份：</label>
-        <input type="password" id="pwd-close" placeholder="请输入后端密码" onkeydown="if(event.key==='Enter')doClose()">
-        <div class="modal-btns">
-            <button class="btn btn-dark" onclick="hideModal('close')">取消</button>
-            <button class="btn btn-red" onclick="doClose()">确认关闭</button>
-        </div>
+<!-- Modal: Close -->
+<div class="modal-mask" id="modal-close">
+  <div class="modal-box">
+    <div class="icon">⛔</div>
+    <h3>关闭 RDP 端口</h3>
+    <div class="desc">禁用所有 RDP 防火墙规则，关闭远程桌面访问。</div>
+    <p class="warn" style="font-size:12px;margin-bottom:10px;">⚠️ 端口将保持关闭，直到你手动开启（不会自动恢复）</p>
+    <label>输入密码确认身份</label>
+    <input type="password" id="pwd-close" placeholder="输入后端密码" onkeydown="if(event.key==='Enter')doClose()">
+    <div class="btns">
+      <button class="btn btn-outline-gray" onclick="hideModal('close')">取消</button>
+      <button class="btn btn-outline-red" onclick="doClose()">确认关闭</button>
     </div>
+  </div>
 </div>
 
 <!-- Toast -->
 <div id="toast"></div>
 
 <script>
-// 服务器预注入数据，打开页面即刻渲染，无需等待 fetch
 var __preloaded = false;
 if (window.__PRELOAD__ && window.__PRELOAD__.s) {
-    try {
-        if (window.__PRELOAD__.health) renderHealth(window.__PRELOAD__.health);
-        updateStatus(window.__PRELOAD__.s, window.__PRELOAD__.h || [], window.__PRELOAD__.l || []);
-        __preloaded = true;
-    } catch(e) {
-        // 预加载失败，不影响后续 refreshAll 正常拉取
-        console.warn('[Preload] failed:', e.message);
-    }
+  try {
+    if (window.__PRELOAD__.health) renderHealth(window.__PRELOAD__.health);
+    updateUI(window.__PRELOAD__.s, window.__PRELOAD__.h || [], window.__PRELOAD__.l || []);
+    __preloaded = true;
+  } catch(e) { console.warn('[Preload]', e.message); }
 }
 
-// ============================================================================
-// State
-// ============================================================================
-let curStatus = null;
-let lastUpdated = 0;
-let cdInterval = null;
+let cdIntv = null;
 
-// ============================================================================
-// Helpers
-// ============================================================================
 function $(id) { return document.getElementById(id); }
 
 function switchTab(name) {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    document.querySelector('.tab[onclick*="'+name+'"]').classList.add('active');
-    $('panel-'+name).classList.add('active');
+  document.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel-wrap').forEach(p => p.classList.remove('active'));
+  document.querySelector(`.tab-item[onclick*="${name}"]`).classList.add('active');
+  $(`panel-${name}`).classList.add('active');
 }
 
-function showModal(type) {
-    document.getElementById('modal-' + type).classList.add('show');
-    const inp = document.querySelector('#modal-' + type + ' input');
-    if (inp) setTimeout(() => inp.focus(), 50);
-}
-function hideModal(type) {
-    document.getElementById('modal-' + type).classList.remove('show');
-    const inp = document.querySelector('#modal-' + type + ' input');
-    if (inp) inp.value = '';
-}
+function showModal(t) { $(`modal-${t}`).classList.add('show'); setTimeout(()=>$(`modal-${t} input`).focus(),50); }
+function hideModal(t) { $(`modal-${t}`).classList.remove('show'); const i=$( `modal-${t} input`); if(i)i.value=''; }
 
 function toast(msg, type='ok') {
-    const t = $('toast');
-    t.textContent = msg;
-    t.className = type === 'ok' ? 'ok' : 'err';
-    setTimeout(() => t.className = '', 3500);
+  const t = $('toast');
+  t.textContent = msg; t.className = 'show ' + type;
+  setTimeout(()=>t.className='', 3500);
 }
 
-function fmtCountdown(ms) {
-    const s = Math.max(0, Math.floor(ms / 1000));
-    return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+function fmtCD(ms) {
+  const s = Math.max(0, Math.floor(ms/1000));
+  return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
 }
 
-function startCountdown() {
-    if (!cdInterval) cdInterval = setInterval(refreshAll, 1000);
-}
-function stopCountdown() {
-    if (cdInterval) { clearInterval(cdInterval); cdInterval = null; }
-}
-
-function fmtTime(ts) {
-    if (!ts) return '-';
-    return new Date(ts).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai'});
-}
-
-// ============================================================================
-// API
-// ============================================================================
 async function apiPost(path, body) {
-    const r = await fetch(path, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(body)
-    });
-    return r.json();
+  return (await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json();
 }
 
 async function doOpen() {
-    const pwd = document.querySelector('#modal-open input').value;
-    if (!pwd) { toast('请输入密码', 'err'); return; }
-    hideModal('open');
-    try {
-        const r = await apiPost('/api/force-open', { password: pwd });
-        if (!r.ok) { toast(r.error || '操作失败', 'err'); return; }
-        toast(`RDP 已开启，${r.restored} 条规则已恢复，有效期 5 分钟`, 'ok');
-        refreshAll();
-    } catch(e) { toast('网络错误', 'err'); }
+  const pwd = $('#pwd-open').value;
+  if (!pwd) { toast('请输入密码','err'); return; }
+  hideModal('open');
+  try {
+    const r = await apiPost('/api/force-open', {password:pwd});
+    if (!r.ok) { toast(r.error||'操作失败','err'); return; }
+    toast(`RDP 已开启，有效期 5 分钟`,'ok');
+    refreshAll();
+  } catch(e) { toast('网络错误','err'); }
 }
 
 async function doClose() {
-    const pwd = document.querySelector('#modal-close input').value;
-    if (!pwd) { toast('请输入密码', 'err'); return; }
-    hideModal('close');
-    try {
-        const r = await apiPost('/api/close', { password: pwd });
-        if (!r.ok) { toast(r.error || '操作失败', 'err'); return; }
-        toast(`RDP 端口已关闭（禁用 ${r.closed} 条规则），需强制开启才能重开`, 'ok');
-        refreshAll();
-    } catch(e) { toast('网络错误', 'err'); }
+  const pwd = $('#pwd-close').value;
+  if (!pwd) { toast('请输入密码','err'); return; }
+  hideModal('close');
+  try {
+    const r = await apiPost('/api/close', {password:pwd});
+    if (!r.ok) { toast(r.error||'操作失败','err'); return; }
+    toast(`RDP 已关闭（禁用 ${r.closed} 条规则）`,'ok');
+    refreshAll();
+  } catch(e) { toast('网络错误','err'); }
 }
 
-// ============================================================================
-// Data
-// ============================================================================
 async function refreshAll() {
-    lastUpdated = Date.now();
-    try {
-        const [statusRes, historyRes, logsRes, healthRes] = await Promise.all([
-            fetch('/api/status'),
-            fetch('/api/history'),
-            fetch('/api/logs'),
-            fetch('/api/health'),
-        ]);
-        const s = await statusRes.json();
-        const h = await historyRes.json();
-        const l = await logsRes.json();
-        const health = await healthRes.json();
-        renderHealth(health);
-        updateStatus(s, h, l);
-    } catch(e) {
-        console.error('refreshAll error:', e);
-    }
+  try {
+    const [sr, hr, lr, healthR] = await Promise.all([
+      fetch('/api/status'), fetch('/api/history'), fetch('/api/logs'), fetch('/api/health')
+    ]);
+    const s = await sr.json();
+    const h = await hr.json();
+    const l = await lr.json();
+    const health = await healthR.json();
+    renderHealth(health);
+    updateUI(s, h, l);
+  } catch(e) { console.error(e); }
 }
 
 function renderHealth(health) {
-    const box = $('health-warnings');
-    if (!box) return;
-    if (!health || !health.warnings || health.warnings.length === 0) {
-        box.innerHTML = '';
-        return;
-    }
-    const hasCritical = health.warnings.some(w => w.level === 'critical');
-    const cls = hasCritical ? 'health-banner' : 'health-banner warning';
-    const icon = hasCritical ? '🚨' : '⚠️';
-    const title = hasCritical ? '防护失效' : '防护警告';
-    let html = '<div class="' + cls + '"><div class="health-title">' + icon + ' ' + title + '</div>';
-    for (const w of health.warnings) {
-        html += '<div class="health-item">• ' + escapeHtml(w.msg) + '</div>';
-    }
-    html += '</div>';
-    box.innerHTML = html;
+  const box = $('health-warnings');
+  if (!box) return;
+  if (!health || !health.warnings || health.warnings.length===0) { box.innerHTML=''; return; }
+  const crit = health.warnings.some(w=>w.level==='critical');
+  const cls = crit ? 'health-bar critical' : 'health-bar warning';
+  const icon = crit ? '🚨' : '⚠️';
+  let html = `<div class="${cls}"><span>${icon}</span><div class="items">`;
+  for (const w of health.warnings) html += `<span>• ${escapeHtml(w.msg)}</span>`;
+  html += '</div></div>';
+  box.innerHTML = html;
 }
 
-function updateStatus(s, history, logs) {
-    // Status
-    const hero = $('status-hero');
-    hero.className = 'status-hero ' + s.status;
+function updateUI(s, history, logs) {
+  const banner = $('status-banner');
+  const mapper = { NORMAL:'open', BLOCKED:'closed', FORCE_OPEN:'force', MANUAL_CLOSED:'manual' };
+  banner.className = 'status-banner ' + (mapper[s.status]||'open');
 
-    const titles = {
-        NORMAL: 'RDP 端口开放 — 防护监控中',
-        BLOCKED: '⚠ 受到攻击，端口已关闭',
-        FORCE_OPEN: 'RDP 强制开启中 — 用户手动操作',
-        MANUAL_CLOSED: 'RDP 端口已手动关闭',
-    };
-    const descs = {
-        NORMAL: `${s.openCount} 条防火墙规则已启用，每分钟检测暴力破解。攻击阈值：${s.threshold} 次失败 / ${s.lookback} 秒`,
-        BLOCKED: `检测到暴力破解，RDP 端口已被防火墙规则关闭，外部无法连接。剩余 ${s.blockedRemaining} 分钟后自动恢复。`,
-        FORCE_OPEN: `强制开启生效中，${s.forceOpenUntil} 到期自动关闭。`,
-        MANUAL_CLOSED: `端口由你手动关闭，不会自动恢复。如需开启，使用「强制开启 RDP」。`,
-    };
-    const icons = { NORMAL: '🛡', BLOCKED: '🚨', FORCE_OPEN: '✅', MANUAL_CLOSED: '🔒' };
+  const titles = {
+    NORMAL:'RDP 端口开放 — 防护监控中',
+    BLOCKED:'⚠ 受到攻击，RDP 端口已关闭',
+    FORCE_OPEN:'RDP 强制开启中 — 用户手动操作',
+    MANUAL_CLOSED:'RDP 端口已手动关闭',
+  };
+  const descs = {
+    NORMAL:`${s.openCount} 条规则已启用 · 阈值：同 IP ${s.threshold} 次 / ${s.lookback} 秒`,
+    BLOCKED:`检测到暴力破解，端口已封禁。剩余 ${s.blockedRemaining || 0} 分钟自动恢复。`,
+    FORCE_OPEN:`强制开启至 ${s.forceOpenUntil || '—'}，到期自动关闭。`,
+    MANUAL_CLOSED:'不会自动恢复，点击「强制开启 RDP」重新打开。',
+  };
+  const icons = { NORMAL:'🛡', BLOCKED:'🚨', FORCE_OPEN:'✅', MANUAL_CLOSED:'🔒' };
 
-    $('status-title').textContent = titles[s.status] || s.status;
-    $('status-desc').textContent = descs[s.status] || '';
-    $('status-icon').textContent = icons[s.status] || '🛡';
+  $('status-title').textContent = titles[s.status]||s.status;
+  $('status-desc').textContent = descs[s.status]||'';
+  $('status-icon').textContent = icons[s.status]||'🛡';
 
-    // Shield color
-    const colors = { NORMAL: 'var(--green)', BLOCKED: 'var(--red)', FORCE_OPEN: 'var(--blue)', MANUAL_CLOSED: 'var(--yellow)' };
-    $('shield').style.color = colors[s.status] || 'var(--text)';
+  // Clock
+  $('clock').textContent = new Date().toLocaleTimeString('zh-CN');
 
-    // Clock
-    $('clock').textContent = new Date().toLocaleTimeString('zh-CN');
+  // Countdown
+  if (s.status==='FORCE_OPEN' && s.forceOpenRemaining!=null) {
+    $('countdown-num').textContent = fmtCD(s.forceOpenRemaining);
+    $('countdown-label').textContent = '强制开启剩余';
+    if (!cdIntv) cdIntv = setInterval(refreshAll, 1000);
+  } else if (s.status==='BLOCKED' && s.blockedRemainingMs!=null) {
+    $('countdown-num').textContent = fmtCD(s.blockedRemainingMs);
+    $('countdown-label').textContent = '端口关闭剩余';
+    if (!cdIntv) cdIntv = setInterval(refreshAll, 1000);
+    const cd = $('info-blocked-countdown');
+    if (cd) cd.textContent = (s.blockedRemaining||'?') + ' 分钟';
+  } else if (s.status==='MANUAL_CLOSED') {
+    $('countdown-num').textContent = '🔒';
+    $('countdown-label').textContent = '已手动关闭';
+    if (cdIntv) { clearInterval(cdIntv); cdIntv = null; }
+  } else {
+    $('countdown-num').textContent = '🛡';
+    $('countdown-label').textContent = '系统正常';
+    if (cdIntv) { clearInterval(cdIntv); cdIntv = null; }
+  }
 
-    // Countdown
-    if (s.status === 'FORCE_OPEN' && s.forceOpenRemaining != null) {
-        $('countdown-num').textContent = fmtCountdown(s.forceOpenRemaining);
-        $('countdown-label').textContent = '强制开启剩余';
-        startCountdown();
-    } else if (s.status === 'BLOCKED' && s.blockedRemainingMs != null) {
-        $('countdown-num').textContent = fmtCountdown(s.blockedRemainingMs);
-        $('countdown-label').textContent = '端口关闭剩余';
-        startCountdown();
-        const cd = $('info-blocked-countdown');
-        if (cd) cd.textContent = s.blockedRemaining + ' 分钟';
-    } else if (s.status === 'MANUAL_CLOSED') {
-        $('countdown-num').textContent = '🔒';
-        $('countdown-label').textContent = '已手动关闭';
-        stopCountdown();
-    } else {
-        $('countdown-num').textContent = '🛡';
-        $('countdown-label').textContent = '系统正常';
-        stopCountdown();
-    }
+  // Metrics
+  $('m-open').textContent = s.openCount ?? '-';
+  $('m-closed').textContent = s.closedCount ?? '-';
+  $('m-attacks').textContent = (history||[]).length;
+  $('m-fails').textContent = (history||[]).reduce((sum,h)=>sum+(h.total||0),0);
+  let ipSet = new Set();
+  for (const h of (history||[])) for (const ip of Object.keys(h.ipCounts||{})) ipSet.add(ip);
+  $('m-ips').textContent = ipSet.size;
 
-    // Stats
-    $('stat-open').textContent = s.openCount ?? '-';
-    $('stat-closed').textContent = s.closedCount ?? '-';
-    // 历史数据已限定为“今天”，直接计数/求和即今日统计
-    $('stat-attacks').textContent = (history || []).length;
-    const todayFails = (history || []).reduce((sum, h) => sum + (h.total || 0), 0);
-    $('stat-fails').textContent = todayFails;
+  // Buttons
+  const btnOpen = $('btn-open');
+  const btnClose = $('btn-close');
+  btnOpen.style.display  = (s.status==='BLOCKED'||s.status==='MANUAL_CLOSED') ? '' : 'none';
+  btnClose.style.display = (s.status==='NORMAL'||s.status==='FORCE_OPEN') ? '' : 'none';
+  btnClose.textContent = s.status==='FORCE_OPEN' ? '⛔ 立即关闭端口' : '⛔ 关闭 RDP 端口';
 
-    // Buttons — 核心按钮逻辑：
-    //   无攻击（NORMAL）      → 只显示「关闭 RDP 端口」
-    //   受到攻击（BLOCKED）    → 只显示「强制开启 RDP」
-    //   强制开启中（FORCE_OPEN）→ 显示「立即关闭端口」（可提前结束）
-    //   手动关闭（MANUAL_CLOSED）→ 只显示「强制开启 RDP」（重新打开）
-    const btnOpen   = $('btn-open');
-    const btnClose  = $('btn-close');
-    btnOpen.style.display  = (s.status === 'BLOCKED' || s.status === 'MANUAL_CLOSED') ? '' : 'none';
-    btnClose.style.display = (s.status === 'NORMAL' || s.status === 'FORCE_OPEN') ? '' : 'none';
-    if (s.status === 'FORCE_OPEN') {
-        btnClose.textContent = '⛔ 立即关闭端口';
-    } else {
-        btnClose.textContent = '⛔ 关闭 RDP 端口';
-    }
+  // Info boxes
+  $('box-normal').style.display  = s.status==='NORMAL'?'':'none';
+  $('box-blocked').style.display = s.status==='BLOCKED'?'':'none';
+  $('box-force').style.display   = s.status==='FORCE_OPEN'?'':'none';
+  $('box-manual').style.display  = s.status==='MANUAL_CLOSED'?'':'none';
 
-    // Info boxes
-    $('info-normal').style.display    = s.status === 'NORMAL' ? '' : 'none';
-    $('info-blocked').style.display   = s.status === 'BLOCKED' ? '' : 'none';
-    $('info-force').style.display     = s.status === 'FORCE_OPEN' ? '' : 'none';
-    $('info-manual').style.display    = s.status === 'MANUAL_CLOSED' ? '' : 'none';
-
-    // Tables
-    renderOverview(history || []);
-    renderHistory(history || []);
-    renderRules(s);
-    renderLog(logs || []);
-}
-
-function isToday(timeStr) {
-    if (!timeStr) return false;
-    const d = new Date(timeStr);
-    const now = new Date();
-    return d.toDateString() === now.toDateString();
+  // Tables
+  renderOverview(history||[]);
+  renderHistory(history||[]);
+  renderRules(s);
+  renderLog(logs||[]);
 }
 
 function renderOverview(h) {
-    // 合并所有历史数据
-    const mergedUsers = {};
-    const mergedIPs = {};
-    let totalEvents = 0;
-    for (const r of h) {
-        totalEvents++;
-        for (const [u, c] of Object.entries(r.userCounts || {})) mergedUsers[u] = (mergedUsers[u] || 0) + c;
-        for (const [ip, c] of Object.entries(r.ipCounts || {})) mergedIPs[ip] = (mergedIPs[ip] || 0) + c;
-    }
+  const mergedUsers = {}, mergedIPs = {};
+  let totalEv=0;
+  for (const r of h) {
+    totalEv++;
+    for (const [u,c] of Object.entries(r.userCounts||{})) mergedUsers[u] = (mergedUsers[u]||0)+c;
+    for (const [ip,c] of Object.entries(r.ipCounts||{})) mergedIPs[ip] = (mergedIPs[ip]||0)+c;
+  }
 
-    // 统计卡片
-    const ue = $('stat-user-count'); if (ue) ue.textContent = Object.keys(mergedUsers).length;
-    const ie = $('stat-ip-count'); if (ie) ie.textContent = Object.keys(mergedIPs).length;
-    const ee = $('stat-event-count'); if (ee) ee.textContent = totalEvents;
-
-    // 用户名排行
-    const knownUsers = ['administrator','admin','guest','user','test'];
-    const userEntries = Object.entries(mergedUsers).sort((a,b) => b[1]-a[1]).slice(0, 10);
-    const uBox = $('overview-users');
-    if (uBox) {
-        if (!userEntries.length) {
-            uBox.innerHTML = '<div class="empty" style="padding:24px">暂无数据</div>';
-        } else {
-            let uh = '<table><thead><tr><th>用户名</th><th>次数</th><th>类型</th></tr></thead><tbody>';
-            for (const [u, c] of userEntries) {
-                const known = knownUsers.includes(u.toLowerCase());
-                uh += `<tr><td class="td-ip">${escapeHtml(u)}</td><td class="td-num">${c}</td><td><span class="tag ${known ? 'tag-red' : 'tag-gray'}">${known ? '真实账户' : '字典猜测'}</span></td></tr>`;
-            }
-            uBox.innerHTML = uh + '</tbody></table>';
-        }
+  const knownUsers = ['administrator','admin','guest','user','test'];
+  const userEnt = Object.entries(mergedUsers).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  const uBox = $('overview-users');
+  if (uBox) {
+    if (!userEnt.length) { uBox.innerHTML = '<div class="empty-state" style="padding:24px">暂无数据</div>'; }
+    else {
+      let hh = '<table><thead><tr><th>用户名</th><th>次数</th><th>类型</th></tr></thead><tbody>';
+      for (const [u,c] of userEnt) {
+        const kn = knownUsers.includes(u.toLowerCase());
+        hh += `<tr><td class="td-ip">${escapeHtml(u)}</td><td class="td-num">${c}</td><td><span class="tag ${kn?'tag-red':'tag-gray'}">${kn?'真实账户':'字典猜测'}</span></td></tr>`;
+      }
+      uBox.innerHTML = hh + '</tbody></table>';
     }
+  }
 
-    // IP 排行
-    const ipEntries = Object.entries(mergedIPs).sort((a,b) => b[1]-a[1]).slice(0, 10);
-    const iBox = $('overview-ips');
-    if (iBox) {
-        if (!ipEntries.length) {
-            iBox.innerHTML = '<div class="empty" style="padding:24px">暂无数据</div>';
-        } else {
-            let ih = '<table><thead><tr><th>IP 地址</th><th>次数</th><th>风险</th></tr></thead><tbody>';
-            for (const [ip, c] of ipEntries) {
-                const rl = c >= 100 ? ['高危','tag-red'] : c >= 50 ? ['中危','tag-yellow'] : c >= 10 ? ['低危','tag-yellow'] : ['观察','tag-green'];
-                ih += `<tr><td class="td-ip">${escapeHtml(ip)}</td><td class="td-num">${c}</td><td><span class="tag ${rl[1]}">${rl[0]}</span></td></tr>`;
-            }
-            iBox.innerHTML = ih + '</tbody></table>';
-        }
+  const ipEnt = Object.entries(mergedIPs).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  const iBox = $('overview-ips');
+  if (iBox) {
+    if (!ipEnt.length) { iBox.innerHTML = '<div class="empty-state" style="padding:24px">暂无数据</div>'; }
+    else {
+      let ih = '<table><thead><tr><th>IP 地址</th><th>次数</th><th>风险</th></tr></thead><tbody>';
+      for (const [ip,c] of ipEnt) {
+        const rl = c>=100?['高危','tag-red']:c>=50?['中危','tag-yellow']:c>=10?['低危','tag-yellow']:['观察','tag-green'];
+        ih += `<tr><td class="td-ip">${escapeHtml(ip)}</td><td class="td-num">${c}</td><td><span class="tag ${rl[1]}">${rl[0]}</span></td></tr>`;
+      }
+      iBox.innerHTML = ih + '</tbody></table>';
     }
+  }
 }
 
 function renderHistory(h) {
-    const all = h.slice(-50).reverse();
-    const short = h.slice(-10).reverse();
-
-    function build(rows) {
-        if (!rows.length) {
-            return '<div class="empty"><div class="empty-icon">✅</div>暂无攻击记录<br><span style="color:var(--text3);font-size:12px">系统运行正常，未检测到暴力破解</span></div>';
-        }
-        let html = '<table><thead><tr><th>时间</th><th>攻击 IP</th><th>失败次数</th><th>状态</th></tr></thead><tbody>';
-        for (const r of rows) {
-            const ips = Object.entries(r.ipCounts || {}).map(([ip, c]) => `${ip}×${c}`).join(', ') || '-';
-            html += `<tr>
-<td class="td-time">${r.time || '-'}</td>
-<td class="td-ip">${ips}</td>
-<td class="td-num">${r.total}</td>
-<td><span class="tag tag-red">端口关闭</span></td>
-</tr>`;
-        }
-        return html + '</tbody></table>';
+  const all = h.slice(-50).reverse();
+  const short = h.slice(-10).reverse();
+  function build(rows) {
+    if (!rows.length) return '<div class="empty-state"><div class="icon">✅</div>暂无攻击记录<br><span style="color:var(--text3);font-size:12px">系统运行正常</span></div>';
+    let html = '<table><thead><tr><th>时间</th><th>攻击 IP</th><th>失败次数</th><th>状态</th></tr></thead><tbody>';
+    for (const r of rows) {
+      const ips = Object.entries(r.ipCounts||{}).map(([ip,c])=>`${ip}×${c}`).join(', ')||'-';
+      html += `<tr><td class="td-time">${r.time||'-'}</td><td class="td-ip">${ips}</td><td class="td-num">${r.total}</td><td><span class="tag tag-red">端口关闭</span></td></tr>`;
     }
-    $('overview-table').innerHTML = build(short);
-    $('history-table').innerHTML = build(all);
+    return html + '</tbody></table>';
+  }
+  $('overview-table').innerHTML = build(short);
+  $('history-table').innerHTML = build(all);
 }
 
 function renderRules(s) {
-    let html = '';
-    for (let i = 0; i < (s.openCount || 0); i++) {
-        html += `<div class="rule"><span class="rule-name">RDP 防火墙规则 #${i+1}</span><span class="rule-on">✓ 启用中</span></div>`;
-    }
-    for (let i = 0; i < (s.closedCount || 0); i++) {
-        html += `<div class="rule"><span class="rule-name">RDP 防火墙规则 #${(s.openCount||0)+i+1}</span><span class="rule-off">✕ 已禁用</span></div>`;
-    }
-    if (!html) html = '<div class="empty">无法获取防火墙规则状态</div>';
-    $('rules-body').innerHTML = html;
+  let html = '';
+  for (let i=0; i<(s.openCount||0); i++) html += `<div class="rule-row"><span class="name">RDP 规则 #${i+1}</span><span class="on">✓ 启用</span></div>`;
+  for (let i=0; i<(s.closedCount||0); i++) html += `<div class="rule-row"><span class="name">RDP 规则 #${(s.openCount||0)+i+1}</span><span class="off">✕ 禁用</span></div>`;
+  if (!html) html = '<div class="empty-state">无法获取规则状态</div>';
+  $('rules-body').innerHTML = html;
 }
 
 function renderLog(logs) {
-    if (!logs.length) {
-        $('log-view').innerHTML = '<div style="color:var(--text3);text-align:center;padding:20px">暂无日志</div>';
-        return;
-    }
-    let html = '';
-    for (const l of logs) {
-        html += `<div class="${l.type || 'info'}">${escapeHtml(l.text)}</div>`;
-    }
-    $('log-view').innerHTML = html;
-    $('log-view').scrollTop = $('log-view').scrollHeight;
+  if (!logs.length) { $('log-view').innerHTML = '<div style="color:var(--text3);text-align:center;padding:20px">暂无日志</div>'; return; }
+  let html = '';
+  for (const l of logs) html += `<div class="${l.type||'info'}">${escapeHtml(l.text)}</div>`;
+  $('log-view').innerHTML = html;
+  $('log-view').scrollTop = $('log-view').scrollHeight;
 }
 
-function escapeHtml(str) {
-    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// ============================================================================
 // Init
-// ============================================================================
-if (!__preloaded) {
-    refreshAll();
-}
+if (!__preloaded) refreshAll();
 setInterval(refreshAll, 3000);
 setInterval(() => {
-    fetch('/api/logs').then(r => r.json()).then(l => renderLog(l)).catch(()=>{});
+  fetch('/api/logs').then(r=>r.json()).then(l=>renderLog(l)).catch(()=>{});
 }, 5000);
 </script>
 </body>
