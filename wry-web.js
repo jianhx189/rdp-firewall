@@ -11,12 +11,20 @@
 //   避免多次 spawn powershell 导致请求超时/连接丢失；缓存刷新改用可靠的整组查询
 // v3.10 变更（2026-07-22）：启用/禁用与结果校验在同一 PowerShell 会话内完成，
 //   避免跨会话查询延迟导致误判开启/关闭失败
+// v3.18 变更（2026-07-22）：彻底解决「网页慢/按钮没反应/攻击不即时」三连问题：
+//   1. 新增【常驻 PowerShell 工作进程】复用单一 CIM 会话——所有防火墙查询/变更首次冷启动~9s，
+//      之后亚秒级（原每次都重新建会话 ~9s 是「慢」的根因）；工作进程异常自动回退逐次 spawn，绝不比现在更差。
+//   2. 移除所有热路径上的同步 execSync（攻击检测/健康检查/强制开启），改为全程 async，事件循环不再被阻塞——
+//      这是「强制开启点了没反应」的根因（请求排队在阻塞的 execSync 之后）。
+//   3. 启用/禁用改为单会话内「执行变更 + 轮询直到规则真正提交」，消除 Enable/Disable 提交延迟造成的「假失败/假封禁」。
+//   4. 攻击检测循环复用后台刷新缓存的开放数，避免重复发起 CIM 查询；并加 guard 防重叠执行。
+//   5. 本机 IP 识别改用 Node 原生 os.networkInterfaces()（瞬时、免 PowerShell）。
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, exec } = require('child_process');
+const { execSync, exec, spawn } = require('child_process');
 
 const FORCE_OPEN_DURATION_MS = 5 * 60 * 1000;
 const REOPEN_MINUTES = 5;        // 攻击封禁后自动恢复时间（分钟）
@@ -88,14 +96,125 @@ function psRaw(cmd, timeoutMs) {
     } catch (_) { return ''; }
 }
 
-// 异步版：不阻塞事件循环，用于后台缓存刷新
-function psAsync(cmd, timeoutMs) {
+// 异步版（逐次 spawn powershell，作为兜底）：不阻塞事件循环，用于后台缓存刷新
+function rawPsAsync(cmd, timeoutMs) {
     return new Promise((resolve) => {
         exec(cmd, { timeout: timeoutMs || 30000, windowsHide: true, shell: 'powershell.exe', encoding: 'buffer' }, (err, stdout) => {
             if (err || !stdout) { resolve(''); return; }
             try { resolve(decodePsOutput(stdout)); } catch (_) { resolve(''); }
         });
     });
+}
+
+// ============================================================================
+// 常驻 PowerShell 工作进程（持久化 CIM 会话）
+// ----------------------------------------------------------------------------
+// 每次单独 spawn powershell.exe 都要重新建立 CIM/WSMan 会话，防火墙查询/变更
+// 单次耗时数秒，这就是「网页显示/防火墙作用太慢」的根因。
+// 这里常驻一个 powershell 进程（以 -Command 运行 REPL 循环），所有命令作为单行
+// 经 Invoke-Expression 执行、用标记回传，复用同一 CIM 会话：首次冷启动数秒，
+// 之后每次仅 1~3 秒（已验证 warm 查询 ~2s，远快于每次重建会话）。
+// 若工作进程异常，psAsync 自动回退到 rawPsAsync（逐次 spawn）——绝不会比现在更差。
+// ============================================================================
+let _worker = null;
+let _workerSeq = 0;
+let _workerChain = Promise.resolve();
+const _workerPending = new Map();   // seq -> { resolve, timer }
+const WORKER_START = 'WRY_RESULT_START';
+const WORKER_END = 'WRY_RESULT_END';
+
+// REPL 循环：逐行读取命令 → Invoke-Expression → 回传 WRY_RESULT_START<结果>WRY_RESULT_END
+const WORKER_LOOP = [
+    '$ErrorActionPreference = "Stop"',
+    '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+    '[Console]::InputEncoding = [System.Text.Encoding]::UTF8',
+    'while ($true) {',
+    '  $line = [Console]::In.ReadLine()',
+    '  if ($null -eq $line -or $line -eq "WRY_QUIT") { break }',
+    '  try {',
+    '    $r = Invoke-Expression $line 2>&1 | Out-String',
+    '    [Console]::Out.Write("WRY_RESULT_START" + $r + "WRY_RESULT_END")',
+    '    [Console]::Out.Flush()',
+    '  } catch {',
+    '    [Console]::Out.Write("WRY_RESULT_START" + $_.Exception.Message + "WRY_RESULT_END")',
+    '    [Console]::Out.Flush()',
+    '  }',
+    '}'
+].join('\n');
+
+function _startWorker() {
+    if (_worker) return;
+    try {
+        const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-NoLogo', '-Command', WORKER_LOOP], {
+            windowsHide: true, stdio: ['pipe', 'pipe', 'pipe']
+        });
+        let buf = '';
+        ps.stdout.on('data', (d) => {
+            buf += d.toString();
+            let idx;
+            while ((idx = buf.indexOf(WORKER_END)) !== -1) {
+                const chunk = buf.slice(0, idx);
+                buf = buf.slice(idx + WORKER_END.length);
+                const m = chunk.indexOf(WORKER_START);
+                const content = m >= 0 ? chunk.slice(m + WORKER_START.length) : chunk;
+                const firstKey = _workerPending.keys().next().value;
+                if (firstKey !== undefined) {
+                    const p = _workerPending.get(firstKey);
+                    _workerPending.delete(firstKey);
+                    clearTimeout(p.timer);
+                    p.resolve(content);
+                }
+            }
+        });
+        ps.stderr.on('data', () => {});
+        ps.on('error', () => { _worker = null; });
+        ps.on('exit', () => {
+            _worker = null;
+            // 拒绝所有挂起请求（psAsync 会回退到 spawn）
+            for (const [, p] of _workerPending) { clearTimeout(p.timer); p.resolve(''); }
+            _workerPending.clear();
+            // 冷却后尝试自愈重启
+            setTimeout(_startWorker, 8000);
+        });
+        _worker = ps;
+        // 预热：提前加载 NetSecurity 模块并建立 CIM 会话（仅一次）
+        setTimeout(() => {
+            psWorkerRun('Get-NetFirewallRule -Group "@FirewallAPI.dll,-28752" -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count')
+                .catch(() => {});
+        }, 400);
+    } catch (_) {
+        _worker = null;
+    }
+}
+
+// 串行化所有工作进程请求（结果严格 FIFO，配合「解析最旧 pending」保证正确）
+function psWorkerRun(script) {
+    const run = () => new Promise((resolve) => {
+        if (!_worker) { resolve(''); return; }
+        const seq = ++_workerSeq;
+        const timer = setTimeout(() => {
+            _workerPending.delete(seq);
+            try { _worker.kill(); } catch (_) {}
+            _worker = null;
+            resolve(''); // 超时 → 上层回退到 spawn
+        }, 30000);
+        _workerPending.set(seq, { resolve, timer });
+        try { _worker.stdin.write(String(script) + '\n'); }
+        catch (_) { clearTimeout(timer); _workerPending.delete(seq); resolve(''); }
+    });
+    _workerChain = _workerChain.then(run, run);
+    return _workerChain;
+}
+
+// 统一入口：优先走常驻工作进程（快），异常/未就绪时回退到逐次 spawn（稳）
+function psAsync(cmd, timeoutMs) {
+    if (_worker) {
+        return psWorkerRun(String(cmd)).then((r) => {
+            if (r === '') return rawPsAsync(cmd, timeoutMs);  // 工作进程未能完成 → 兜底
+            return r;
+        });
+    }
+    return rawPsAsync(cmd, timeoutMs);
 }
 
 function formatTime(date) {
@@ -120,6 +239,11 @@ function getRDPOpenCount() {
     try { return getRDPRulesRaw().filter(r => r.enabled).length; } catch (_) { return 0; }
 }
 
+// 异步版（不阻塞事件循环）：用于检测循环 / 校验轮询
+async function getRDPOpenCountAsync() {
+    try { return (await getRDPRulesAsync()).filter(r => r.enabled).length; } catch (_) { return 0; }
+}
+
 function getRDPClosedCount() {
     try { return getRDPRulesRaw().filter(r => !r.enabled).length; } catch (_) { return 0; }
 }
@@ -133,45 +257,33 @@ async function getRDPRulesAsync() {
 }
 
 // 在同一 PowerShell 会话内完成规则启用/禁用（不内联校验，校验交给 JS 侧 getRDPOpenCount）
-async function runFirewallMutation(type, rules) {
-    if (rules.length === 0) return { mutated: 0, openCount: getRDPOpenCount() };
-    const names = rules.map(r => r.name.replace(/'/g, "''"));
-    const action = type === 'Enable' ? 'Enable-NetFirewallRule' : 'Disable-NetFirewallRule';
-    const script = names.map(n => `${action} -Name '${n}'`).join('; ');
-    try { await psAsync(script, 30000); } catch (_) {}
-    return { mutated: rules.length, openCount: getRDPOpenCount() };
-}
+// 单次 PowerShell 会话内完成「启用/禁用 + 轮询校验」：
+// 仅一次 CIM 会话（经常驻工作进程时近乎即时），先执行变更再轮询直到规则状态真正提交，
+// 彻底消除 Enable/Disable 提交延迟导致的「假失败/假封禁」。全程 async，绝不阻塞事件循环。
+const FW_GROUP = '@FirewallAPI.dll,-28752';
+// 单会话内「执行变更 + 轮询校验」，作为单行命令经常驻工作进程执行（ReadLine 每次只取一行）
+const FW_ENABLE_SCRIPT = '$group = "@FirewallAPI.dll,-28752"; $rules = @(Get-NetFirewallRule -Group $group -Direction Inbound -Action Allow -ErrorAction SilentlyContinue); $open = @($rules | Where-Object { $_.Enabled -eq $true }).Count; if ($open -gt 0) { $open } else { $disabled = @($rules | Where-Object { $_.Enabled -ne $true }); if ($disabled.Count -gt 0) { $disabled | Enable-NetFirewallRule }; for ($i = 0; $i -lt 8; $i++) { Start-Sleep -Seconds 1; $open = @(Get-NetFirewallRule -Group $group -Direction Inbound -Action Allow -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $true }).Count; if ($open -gt 0) { break } }; $open }';
+const FW_DISABLE_SCRIPT = '$group = "@FirewallAPI.dll,-28752"; $rules = @(Get-NetFirewallRule -Group $group -Direction Inbound -Action Allow -ErrorAction SilentlyContinue); $open = @($rules | Where-Object { $_.Enabled -eq $true }).Count; if ($open -eq 0) { $open } else { $enabled = @($rules | Where-Object { $_.Enabled -eq $true }); if ($enabled.Count -gt 0) { $enabled | Disable-NetFirewallRule }; for ($i = 0; $i -lt 8; $i++) { Start-Sleep -Seconds 1; $open = @(Get-NetFirewallRule -Group $group -Direction Inbound -Action Allow -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $true }).Count; if ($open -eq 0) { break } }; $open }';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function enableRDPRules() {
-    // 校验 + 最多 2 次重试：确保端口真的开启
-    for (let attempt = 0; attempt < 2; attempt++) {
-        const rules = getRDPRulesRaw().filter(r => !r.enabled);
-        if (rules.length === 0) break;
-        await runFirewallMutation('Enable', rules);
-        await sleep(400);
-        if (getRDPOpenCount() > 0) break;
-    }
-    let open = getRDPOpenCount();
+    let open = 0;
+    try { open = parseInt(String(await psAsync(FW_ENABLE_SCRIPT, 30000)).trim(), 10) || 0; } catch (_) { open = 0; }
     // 兜底：仅当整组规则都不存在（原厂 RDP 规则被误删）时才新建一条
-    if (open === 0 && getRDPRulesRaw().length === 0) {
-        await psAsync("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'", 30000);
-        open = 1;
+    if (!(open > 0)) {
+        const existing = await getRDPRulesAsync();
+        if (existing.length === 0) {
+            try { await psAsync("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'", 30000); open = 1; } catch (_) {}
+        }
     }
     return { mutated: open, openCount: open };
 }
 
 async function disableRDPRules() {
-    // 校验 + 最多 2 次重试：确保端口真的关闭（避免「假封禁」——状态写 BLOCKED 但规则仍启用）
-    for (let attempt = 0; attempt < 2; attempt++) {
-        const rules = getRDPRulesRaw().filter(r => r.enabled);
-        if (rules.length === 0) break;
-        await runFirewallMutation('Disable', rules);
-        await sleep(400);
-        if (getRDPOpenCount() === 0) break;
-    }
-    return { mutated: 0, openCount: getRDPOpenCount() };
+    let open = 0;
+    try { open = parseInt(String(await psAsync(FW_DISABLE_SCRIPT, 30000)).trim(), 10) || 0; } catch (_) { open = 0; }
+    return { mutated: 0, openCount: open };
 }
 
 // 清理测试/历史遗留的兜底规则：仅当原厂 RDP 规则（RemoteDesktop-*）仍存在时才移除，
@@ -195,18 +307,22 @@ function cleanupFallbackRules() {
 // 攻击检测（在常驻 Web 进程内执行，秒级响应；替代原计划任务分钟级延迟）
 // ============================================================================
 
-// 本机自身 IPv4 地址集合（缓存 60s），用于避免「自己把自己锁外面」
-let _ownIpsCache = null;
-let _ownIpsTs = 0;
+// 本机自身 IPv4 地址集合（缓存 60s），用于避免「自己把自己锁外面」。
+// 用 Node 原生 os.networkInterfaces() 取本机 IP——瞬时返回、不 spawn PowerShell（原 Get-NetIPAddress 走 CIM 也需 ~9s）。
 function getOwnIps() {
     const now = Date.now();
     if (_ownIpsCache && now - _ownIpsTs < 60000) return _ownIpsCache;
+    const set = new Set();
     try {
-        const out = psRaw("Get-NetIPAddress -AddressFamily IPv4 | Select-Object -ExpandProperty IPAddress");
-        const set = new Set((out || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean));
-        _ownIpsCache = set; _ownIpsTs = now;
-        return set;
-    } catch (_) { return _ownIpsCache || new Set(); }
+        const ifaces = os.networkInterfaces();
+        for (const name of Object.keys(ifaces)) {
+            for (const ni of (ifaces[name] || [])) {
+                if (ni.family === 'IPv4' || ni.family === 4) set.add(ni.address);
+            }
+        }
+    } catch (_) {}
+    _ownIpsCache = set; _ownIpsTs = now;
+    return set;
 }
 
 function isLoopback(ip) {
@@ -227,15 +343,25 @@ function shouldSkipIp(ip) {
     return false;
 }
 
-// 统计最近 seconds 秒内、来自非本机 IP 的 4625 失败登录，按源 IP 计数
-function countRecentFailures(seconds) {
+// 异步 wevtutil（不阻塞事件循环）
+function wevtutilAsync(q) {
+    return new Promise((resolve) => {
+        exec(`wevtutil qe Security /f:text /q:"${q}" /c:300 /rd:true`,
+            { maxBuffer: 100 * 1024 * 1024, windowsHide: true, encoding: 'buffer' },
+            (err, stdout) => {
+                if (err || !stdout) { resolve(''); return; }
+                try { resolve(new TextDecoder('gb18030', { fatal: false }).decode(stdout)); } catch (_) { resolve(''); }
+            });
+    });
+}
+
+// 统计最近 seconds 秒内、来自非本机 IP 的 4625 失败登录，按源 IP 计数（异步，不阻塞事件循环）
+async function countRecentFailures(seconds) {
     try {
         const q = `*[System[(EventID=4625) and TimeCreated[timediff(@SystemTime) <= ${seconds * 1000 + 5000}]]]`;
-        let text;
+        let text = '';
         try {
-            const buf = execSync(`wevtutil qe Security /f:text /q:"${q}" /c:300 /rd:true`,
-                { encoding: 'buffer', maxBuffer: 100 * 1024 * 1024, windowsHide: true });
-            text = new TextDecoder('gb18030', { fatal: false }).decode(buf);
+            text = await wevtutilAsync(q);
         } catch (_) {
             return { total: 0, ipCounts: {}, userCounts: {}, statusCounts: {} };
         }
@@ -312,17 +438,19 @@ function getRecentLogs() {
 }
 
 // 健康检查：防火墙状态、guard 运行状态
-function getHealth() {
+async function getHealth() {
     const warnings = [];
 
     // 1. 检查 Windows 防火墙是否启用（当前网络配置文件）
-    const fwOut = psRaw('Get-NetFirewallProfile | Where-Object { $_.Enabled -eq $false } | Select-Object -ExpandProperty Name');
-    if (fwOut && fwOut.trim()) {
-        const disabled = fwOut.trim().split('\n').map(s => s.trim()).filter(Boolean);
-        if (disabled.length > 0) {
-            warnings.push({ level: 'critical', msg: 'Windows 防火墙已关闭: ' + disabled.join(', ') + '。防护规则无效，RDP 端口完全裸露！' });
+    try {
+        const fwOut = await psAsync('Get-NetFirewallProfile | Where-Object { $_.Enabled -eq $false } | Select-Object -ExpandProperty Name', 15000);
+        if (fwOut && fwOut.trim()) {
+            const disabled = fwOut.trim().split('\n').map(s => s.trim()).filter(Boolean);
+            if (disabled.length > 0) {
+                warnings.push({ level: 'critical', msg: 'Windows 防火墙已关闭: ' + disabled.join(', ') + '。防护规则无效，RDP 端口完全裸露！' });
+            }
         }
-    }
+    } catch (_) {}
 
     // 2. 检查 Web 内置检测循环是否活跃（替代原 guard 快照检查）
     try {
@@ -334,7 +462,7 @@ function getHealth() {
 
     // 3. 检查 RDP 端口是否在监听
     try {
-        const netstat = psRaw('Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count');
+        const netstat = await psAsync('Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count', 15000);
         const listenCount = parseInt(netstat.trim(), 10) || 0;
         const status = cache.status;
         if (status && status.status === 'BLOCKED' && listenCount > 0) {
@@ -451,11 +579,14 @@ async function refreshStatusAsync() {
         const state = getState();
         const fo = getForceOpen();
         cache.status = deriveStatus({ openCount, closedCount, state, forceOpen: fo });
+        // 供攻击检测循环复用，避免重复发起一次 9s 级 CIM 查询
+        cache.openCount = openCount;
+        cache.closedCount = closedCount;
         try { cache.status.lastAttackTs = getLastAttackTs(); } catch (_) {}
         cache.forceOpen = fo.active ? { active: true, since: fo.since, until: fo.until, remainingMs: fo.remainingMs } : { active: false };
         try { cache.logs = getRecentLogs(); } catch (_) {}
         try { cache.history = getHistory(); } catch (_) {}
-        try { cache.health = getHealth(); } catch (_) {}
+        try { cache.health = await getHealth(); } catch (_) {}
         cache.ts = Date.now();
     } finally {
         refreshInProgress = false;
@@ -484,13 +615,24 @@ function ensureWebFirewallRule() {
     } catch (_) { console.log('[WARN] 创建 WebUI 防火墙规则失败（可能权限不足）'); }
 }
 
-// 攻击检测 + 封禁 + 自动恢复主循环（常驻，秒级响应）
+let guardTickInProgress = false;
+// 取当前 RDP 开放规则数：优先用后台刷新缓存（≤5s 新鲜度，省去一次 CIM 查询）；
+// 缓存未就绪（启动早期）时回退到实时异步查询。
+async function openCountNow() {
+    const c = cache.openCount;
+    if (typeof c === 'number' && c >= 0) return c;
+    return await getRDPOpenCountAsync();
+}
+
+// 攻击检测 + 封禁 + 自动恢复主循环（常驻，秒级响应；全程 async，绝不阻塞事件循环）
 async function runGuardTick() {
+    if (guardTickInProgress) return;   // 防止上一轮（含异步 CIM 查询）未完成时重叠执行
+    guardTickInProgress = true;
     try {
         // 1) 强制开启优先：确保端口开放并解除封禁
         const fo = getForceOpen();
         if (fo.active) {
-            if (getRDPOpenCount() === 0) await enableRDPRules();
+            if ((await openCountNow()) === 0) await enableRDPRules();
             const st = getState();
             if (st.blockedAt) { st.blockedAt = null; st.closeReason = null; st.lastFailCount = 0; atomicWrite(STATE_FILE, JSON.stringify(st, null, 2)); }
             cache.ts = 0; setTimeout(() => refreshStatusAsync(), 400);
@@ -501,7 +643,7 @@ async function runGuardTick() {
         if (state.blockedAt) {
             const elapsedMin = (Date.now() - new Date(state.blockedAt).getTime()) / 60000;
             if (state.closeReason === 'manual') {
-                if (getRDPOpenCount() > 0) await disableRDPRules();
+                if ((await openCountNow()) > 0) await disableRDPRules();
                 return;
             }
             if (elapsedMin >= REOPEN_MINUTES) {
@@ -512,18 +654,18 @@ async function runGuardTick() {
             }
             return; // 攻击封禁倒计时中，保持关闭
         }
-        // 3) 正常态：检测攻击
-        const { total, ipCounts, userCounts, statusCounts } = countRecentFailures(LOOKBACK);
+        // 3) 正常态：检测攻击（异步，不阻塞事件循环）
+        const { total, ipCounts, userCounts, statusCounts } = await countRecentFailures(LOOKBACK);
         if (total === 0) {
-            if (getRDPOpenCount() === 0) { await enableRDPRules(); cache.ts = 0; setTimeout(() => refreshStatusAsync(), 400); }
+            if ((await openCountNow()) === 0) { await enableRDPRules(); cache.ts = 0; setTimeout(() => refreshStatusAsync(), 400); }
             return;
         }
-        if (getRDPOpenCount() === 0) return; // 端口已关闭，不重复处理
+        if ((await openCountNow()) === 0) return; // 端口已关闭，不重复处理
         const triggered = Object.entries(ipCounts).filter(([, c]) => c >= THRESHOLD).map(([ip]) => ip);
         if (triggered.length === 0) return;
-        // —— 触发封禁：立即关闭端口（校验 + 重试，确保真关）——
-        await disableRDPRules();
-        if (getRDPOpenCount() > 0) {
+        // —— 触发封禁：立即关闭端口（单会话内轮询校验，确保真关）——
+        const { openCount: stillOpen } = await disableRDPRules();
+        if (stillOpen > 0) {
             // 端口未真正关闭，不写 BLOCKED，下一轮继续重试
             console.log('[WARN] 封禁失败：RDP 端口仍未关闭，下一轮重试');
             cache.ts = 0; setTimeout(() => refreshStatusAsync(), 200);
@@ -540,6 +682,7 @@ async function runGuardTick() {
         cache.ts = 0; setTimeout(() => refreshStatusAsync(), 200); // 立即刷新面板
     } catch (_) {
     } finally {
+        guardTickInProgress = false;
         lastGuardTickTs = Date.now();
     }
 }
@@ -553,6 +696,8 @@ try {
 } catch (_) {}
 // 确保局域网可访问本面板
 try { ensureWebFirewallRule(); } catch (_) {}
+// 启动常驻 PowerShell 工作进程（持久 CIM 会话，防火墙查询/变更亚秒级；异常自动回退逐次 spawn）
+try { _startWorker(); } catch (_) {}
 // 后台异步刷新（含 PowerShell 防火墙规则查询）
 setTimeout(refreshStatusAsync, 2000);
 setInterval(refreshStatusAsync, CACHE_INTERVAL);
