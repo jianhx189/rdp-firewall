@@ -132,42 +132,46 @@ async function getRDPRulesAsync() {
     return arr.map(r => ({ name: r.Name, enabled: r.Enabled === true || r.Enabled === 'True' || r.Enabled === 1 || r.Enabled === '1' }));
 }
 
-// 在同一 PowerShell 会话内完成规则启用/禁用并立即校验结果，
-// 避免跨会话查询延迟/缓存导致误判，也避免多次 spawn powershell 超时
+// 在同一 PowerShell 会话内完成规则启用/禁用（不内联校验，校验交给 JS 侧 getRDPOpenCount）
 async function runFirewallMutation(type, rules) {
     if (rules.length === 0) return { mutated: 0, openCount: getRDPOpenCount() };
     const names = rules.map(r => r.name.replace(/'/g, "''"));
     const action = type === 'Enable' ? 'Enable-NetFirewallRule' : 'Disable-NetFirewallRule';
-    const cmdParts = names.map(n => `${action} -Name '${n}'`);
-    const verify = "Start-Sleep -Milliseconds 600; $open = Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Where-Object { $_.Enabled -eq 'True' } | Measure-Object | Select-Object -ExpandProperty Count; $open";
-    const script = cmdParts.join('; ') + '; ' + verify;
-    const out = await psAsync(script, 60000);
-    const openCount = parseInt((out || '').trim(), 10) || 0;
-    return { mutated: rules.length, openCount };
+    const script = names.map(n => `${action} -Name '${n}'`).join('; ');
+    try { await psAsync(script, 30000); } catch (_) {}
+    return { mutated: rules.length, openCount: getRDPOpenCount() };
 }
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
 async function enableRDPRules() {
-    const rules = getRDPRulesRaw().filter(r => !r.enabled);
-    let mutated = 0;
-    let openCount = getRDPOpenCount();
-    if (rules.length > 0) {
-        const res = await runFirewallMutation('Enable', rules);
-        mutated = res.mutated;
-        openCount = res.openCount;
+    // 校验 + 最多 2 次重试：确保端口真的开启
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const rules = getRDPRulesRaw().filter(r => !r.enabled);
+        if (rules.length === 0) break;
+        await runFirewallMutation('Enable', rules);
+        await sleep(400);
+        if (getRDPOpenCount() > 0) break;
     }
+    let open = getRDPOpenCount();
     // 兜底：仅当整组规则都不存在（原厂 RDP 规则被误删）时才新建一条
-    if (getRDPRulesRaw().length === 0) {
-        await psAsync("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'", 60000);
-        mutated++;
-        openCount = 1;
+    if (open === 0 && getRDPRulesRaw().length === 0) {
+        await psAsync("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'", 30000);
+        open = 1;
     }
-    return { mutated, openCount };
+    return { mutated: open, openCount: open };
 }
 
 async function disableRDPRules() {
-    const rules = getRDPRulesRaw().filter(r => r.enabled);
-    if (rules.length === 0) return { mutated: 0, openCount: getRDPOpenCount() };
-    return await runFirewallMutation('Disable', rules);
+    // 校验 + 最多 2 次重试：确保端口真的关闭（避免「假封禁」——状态写 BLOCKED 但规则仍启用）
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const rules = getRDPRulesRaw().filter(r => r.enabled);
+        if (rules.length === 0) break;
+        await runFirewallMutation('Disable', rules);
+        await sleep(400);
+        if (getRDPOpenCount() === 0) break;
+    }
+    return { mutated: 0, openCount: getRDPOpenCount() };
 }
 
 // 清理测试/历史遗留的兜底规则：仅当原厂 RDP 规则（RemoteDesktop-*）仍存在时才移除，
@@ -517,8 +521,14 @@ async function runGuardTick() {
         if (getRDPOpenCount() === 0) return; // 端口已关闭，不重复处理
         const triggered = Object.entries(ipCounts).filter(([, c]) => c >= THRESHOLD).map(([ip]) => ip);
         if (triggered.length === 0) return;
-        // —— 触发封禁：立即关闭端口 ——
+        // —— 触发封禁：立即关闭端口（校验 + 重试，确保真关）——
         await disableRDPRules();
+        if (getRDPOpenCount() > 0) {
+            // 端口未真正关闭，不写 BLOCKED，下一轮继续重试
+            console.log('[WARN] 封禁失败：RDP 端口仍未关闭，下一轮重试');
+            cache.ts = 0; setTimeout(() => refreshStatusAsync(), 200);
+            return;
+        }
         const st = getState();
         st.blockedAt = new Date().toISOString();
         st.closeReason = 'attack';
