@@ -187,6 +187,98 @@ function cleanupFallbackRules() {
     } catch (_) { return 0; }
 }
 
+// ============================================================================
+// 攻击检测（在常驻 Web 进程内执行，秒级响应；替代原计划任务分钟级延迟）
+// ============================================================================
+
+// 本机自身 IPv4 地址集合（缓存 60s），用于避免「自己把自己锁外面」
+let _ownIpsCache = null;
+let _ownIpsTs = 0;
+function getOwnIps() {
+    const now = Date.now();
+    if (_ownIpsCache && now - _ownIpsTs < 60000) return _ownIpsCache;
+    try {
+        const out = psRaw("Get-NetIPAddress -AddressFamily IPv4 | Select-Object -ExpandProperty IPAddress");
+        const set = new Set((out || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean));
+        _ownIpsCache = set; _ownIpsTs = now;
+        return set;
+    } catch (_) { return _ownIpsCache || new Set(); }
+}
+
+function isLoopback(ip) {
+    if (!ip) return true;
+    const lc = String(ip).toLowerCase();
+    if (lc === '127.0.0.1' || lc === '::1' || lc === 'localhost') return true;
+    if (lc.startsWith('::ffff:127.')) return true;
+    return false;
+}
+
+// 仅跳过「回环地址」和「本机自身 IP」——避免把自己锁在外面；
+// 局域网其他设备 / 跳板机 / 外网的攻击源 IP 一律参与检测。
+// （修复原 isPrivateIP 把整个内网段全部放行的缺陷，那会导致局域网攻击永远不触发）
+function shouldSkipIp(ip) {
+    if (!ip || ip === '-') return true;
+    if (isLoopback(ip)) return true;
+    try { if (getOwnIps().has(ip)) return true; } catch (_) {}
+    return false;
+}
+
+// 统计最近 seconds 秒内、来自非本机 IP 的 4625 失败登录，按源 IP 计数
+function countRecentFailures(seconds) {
+    try {
+        const q = `*[System[(EventID=4625) and TimeCreated[timediff(@SystemTime) <= ${seconds * 1000 + 5000}]]]`;
+        let text;
+        try {
+            const buf = execSync(`wevtutil qe Security /f:text /q:"${q}" /c:300 /rd:true`,
+                { encoding: 'buffer', maxBuffer: 100 * 1024 * 1024, windowsHide: true });
+            text = new TextDecoder('gb18030', { fatal: false }).decode(buf);
+        } catch (_) {
+            return { total: 0, ipCounts: {}, userCounts: {}, statusCounts: {} };
+        }
+        const blocks = text.split(/^Event\[\d+\]\s*$/m).filter(b => b.trim());
+        const ipCounts = {}, userCounts = {}, statusCounts = {};
+        let total = 0;
+        for (const b of blocks) {
+            const dm = b.match(/Date:\s*(\S+)/);
+            if (!dm) continue;
+            if (new Date(dm[1]) < new Date(Date.now() - seconds * 1000)) continue;  // 仅统计窗口内
+            const m = b.match(/源网络地址:\s*([\d\.:a-fA-F]+)/) || b.match(/Source Network Address:\s*([\d\.:a-fA-F]+)/);
+            if (!m || !m[1]) continue;
+            const ip = m[1];
+            if (shouldSkipIp(ip)) continue;
+            total++;
+            ipCounts[ip] = (ipCounts[ip] || 0) + 1;
+            const um = b.match(/登录失败的帐户:[\s\S]*?帐户名:\s*(\S+)/) ||
+                       b.match(/Account For Which Logon Failed:[\s\S]*?Account Name:\s*(\S+)/);
+            if (um && um[1] && um[1] !== '-') userCounts[um[1]] = (userCounts[um[1]] || 0) + 1;
+            const sm = b.match(/子状态:\s*(0x[0-9A-Fa-f]+)/) || b.match(/Sub Status:\s*(0x[0-9A-Fa-f]+)/);
+            if (sm) statusCounts[sm[1]] = (statusCounts[sm[1]] || 0) + 1;
+        }
+        return { total, ipCounts, userCounts, statusCounts };
+    } catch (_) {
+        return { total: 0, ipCounts: {}, userCounts: {}, statusCounts: {} };
+    }
+}
+
+function persistAttackWeb(total, ipCounts, userCounts, statusCounts) {
+    try {
+        let history = readJson(ATTACK_HISTORY_FILE, []);
+        history = history.filter(h => h.ts > Date.now() - 30 * 24 * 3600 * 1000);
+        const ts = Date.now();
+        if (!history.some(h => Math.abs(h.ts - ts) < 4000)) {
+            history.push({
+                ts,
+                time: new Date().toLocaleString('zh-CN', { timeZone: TZ }),
+                total,
+                ipCounts: ipCounts || {},
+                userCounts: userCounts || {},
+                statusCounts: statusCounts || {},
+            });
+            atomicWrite(ATTACK_HISTORY_FILE, JSON.stringify(history, null, 2));
+        }
+    } catch (_) {}
+}
+
 function getState() {
     return readJson(STATE_FILE, { blockedAt: null, closeReason: null, lastFailCount: 0, lastTotal: 0, blockedIPs: [] });
 }
@@ -228,17 +320,11 @@ function getHealth() {
         }
     }
 
-    // 2. 检查 guard 快照是否最近（5 分钟内有更新说明 guard 在运行）
+    // 2. 检查 Web 内置检测循环是否活跃（替代原 guard 快照检查）
     try {
-        const snapshots = readJson(SNAPSHOT_FILE, []);
-        if (snapshots.length > 0) {
-            const last = snapshots[snapshots.length - 1];
-            const age = (Date.now() - last.ts) / 1000;
-            if (age > 300) {
-                warnings.push({ level: 'warning', msg: `Guard 超过 ${Math.floor(age/60)} 分钟未更新快照，可能未正常运行` });
-            }
-        } else {
-            warnings.push({ level: 'warning', msg: '无 Guard 快照数据，可能从未运行过' });
+        const age = (Date.now() - lastGuardTickTs) / 1000;
+        if (age > 60) {
+            warnings.push({ level: 'warning', msg: `攻击检测循环超过 ${Math.floor(age)} 秒未运行，防护可能未生效` });
         }
     } catch (_) {}
 
@@ -347,7 +433,8 @@ let closeInProgress = false;
 
 // ===== 后台缓存：异步采集，HTTP 请求零延迟 =====
 const cache = { status: null, logs: [], history: [], forceOpen: null, health: { ok: true, warnings: [] }, ts: 0 };
-const CACHE_INTERVAL = 15000;  // 15秒刷新
+const CACHE_INTERVAL = 5000;   // 5秒刷新（更跟手）
+let lastGuardTickTs = Date.now();  // 检测循环最后活跃时间（健康自检用）
 
 let refreshInProgress = false;
 async function refreshStatusAsync() {
@@ -382,6 +469,71 @@ function quickInitCache() {
     cache.ts = Date.now();
 }
 
+// 确保 WebUI 自身可被局域网访问：创建一条入站允许规则（TCP 19888，仅专用/域网络）
+function ensureWebFirewallRule() {
+    try {
+        const name = 'wry合金防护-WebUI';
+        const out = psRaw(`Get-NetFirewallRule -DisplayName '${name}' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name`);
+        if (out && out.trim()) { console.log('WebUI 防火墙入站规则已存在'); return; }
+        psRaw(`New-NetFirewallRule -DisplayName '${name}' -Direction Inbound -Protocol TCP -LocalPort ${PORT} -Action Allow -Profile Private,Domain -EdgeTraversalPolicy Allow`);
+        console.log('已创建 WebUI 防火墙入站规则（TCP ' + PORT + '，局域网可访问）');
+    } catch (_) { console.log('[WARN] 创建 WebUI 防火墙规则失败（可能权限不足）'); }
+}
+
+// 攻击检测 + 封禁 + 自动恢复主循环（常驻，秒级响应）
+async function runGuardTick() {
+    try {
+        // 1) 强制开启优先：确保端口开放并解除封禁
+        const fo = getForceOpen();
+        if (fo.active) {
+            if (getRDPOpenCount() === 0) await enableRDPRules();
+            const st = getState();
+            if (st.blockedAt) { st.blockedAt = null; st.closeReason = null; st.lastFailCount = 0; atomicWrite(STATE_FILE, JSON.stringify(st, null, 2)); }
+            cache.ts = 0; setTimeout(() => refreshStatusAsync(), 400);
+            return;
+        }
+        // 2) 已封禁？
+        const state = getState();
+        if (state.blockedAt) {
+            const elapsedMin = (Date.now() - new Date(state.blockedAt).getTime()) / 60000;
+            if (state.closeReason === 'manual') {
+                if (getRDPOpenCount() > 0) await disableRDPRules();
+                return;
+            }
+            if (elapsedMin >= REOPEN_MINUTES) {
+                await enableRDPRules();
+                state.blockedAt = null; state.closeReason = null; state.lastFailCount = 0;
+                atomicWrite(STATE_FILE, JSON.stringify(state, null, 2));
+                cache.ts = 0; setTimeout(() => refreshStatusAsync(), 400);
+            }
+            return; // 攻击封禁倒计时中，保持关闭
+        }
+        // 3) 正常态：检测攻击
+        const { total, ipCounts, userCounts, statusCounts } = countRecentFailures(LOOKBACK);
+        if (total === 0) {
+            if (getRDPOpenCount() === 0) { await enableRDPRules(); cache.ts = 0; setTimeout(() => refreshStatusAsync(), 400); }
+            return;
+        }
+        if (getRDPOpenCount() === 0) return; // 端口已关闭，不重复处理
+        const triggered = Object.entries(ipCounts).filter(([, c]) => c >= THRESHOLD).map(([ip]) => ip);
+        if (triggered.length === 0) return;
+        // —— 触发封禁：立即关闭端口 ——
+        await disableRDPRules();
+        const st = getState();
+        st.blockedAt = new Date().toISOString();
+        st.closeReason = 'attack';
+        st.blockedIPs = triggered;
+        st.lastFailCount = total;
+        atomicWrite(STATE_FILE, JSON.stringify(st, null, 2));
+        persistAttackWeb(total, ipCounts, userCounts, statusCounts);
+        console.log(`[BLOCK] 检测到暴力破解，已关闭 RDP 端口，攻击 IP: ${triggered.join(', ')}`);
+        cache.ts = 0; setTimeout(() => refreshStatusAsync(), 200); // 立即刷新面板
+    } catch (_) {
+    } finally {
+        lastGuardTickTs = Date.now();
+    }
+}
+
 // 初始填充
 quickInitCache();
 // 启动时清理遗留的兜底规则（仅 SYSTEM 身份下能 Remove），保持规则列表干净
@@ -389,9 +541,14 @@ try {
     const removed = cleanupFallbackRules();
     if (removed > 0) console.log(`已清理 ${removed} 条遗留兜底规则`);
 } catch (_) {}
+// 确保局域网可访问本面板
+try { ensureWebFirewallRule(); } catch (_) {}
 // 后台异步刷新（含 PowerShell 防火墙规则查询）
 setTimeout(refreshStatusAsync, 2000);
 setInterval(refreshStatusAsync, CACHE_INTERVAL);
+// 攻击检测守护循环：5 秒一轮，秒级响应（替代原计划任务分钟级延迟）
+setTimeout(runGuardTick, 3000);
+setInterval(runGuardTick, 5000);
 
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1:' + PORT);
@@ -508,6 +665,6 @@ const server = http.createServer((req, res) => {
     res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' }));
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-    console.log('\uD83D\uDEE1 wry\u5408\u91D1\u9632\u62A4 Web \u76D1\u63A7\u5DF2\u542F\u52A8: http://127.0.0.1:' + PORT + '（仅本机可访问）');
+server.listen(PORT, '0.0.0.0', () => {
+    console.log('\uD83D\uDEE1 wry\u5408\u91D1\u9632\u62A4 Web \u76D1\u63A7\u5DF2\u542F\u52A8: http://0.0.0.0:' + PORT + '（已开放局域网访问，仅状态可见，操作需密码）');
 });

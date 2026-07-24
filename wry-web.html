@@ -364,8 +364,8 @@ tr:hover td { background:rgba(0,240,255,.04); }
 
   <!-- 信息条 -->
   <div class="info-box green"  id="box-normal">
-    <strong>🛡 监控中</strong> — RDP 端口正常开放。检测到同 IP <strong>5 次</strong>以上登录失败（30 秒窗口）自动关闭端口 5 分钟。
-    内网 IP 全部放行，跳板机 192.168.3.88 参与检测。
+    <strong>🛡 监控中</strong> — RDP 端口正常开放。检测到同 IP <strong>5 次</strong>以上登录失败（30 秒窗口）立即关闭端口 5 分钟。
+    仅跳过本机自身地址，局域网其他设备 / 跳板机 / 外网攻击均会触发封禁。
   </div>
   <div class="info-box blue"   id="box-force" style="display:none">
     <strong>✅ 强制开启中</strong> — RDP 端口已临时开放，防护暂停。
@@ -511,13 +511,16 @@ async function apiPost(path, body) {
 async function doOpen() {
   const pwd = $('#pwd-open').value;
   if (!pwd) { toast('请输入密码','err'); return; }
+  const btn = document.querySelector('#modal-open .btn-cyan');
+  if (btn) { btn.disabled = true; btn.textContent = '处理中...'; }
   hideModal('open');
   try {
     const r = await apiPost('/api/force-open', {password:pwd});
     if (!r.ok) { toast(r.error||'操作失败','err'); return; }
-    toast(`RDP 已开启，有效期 5 分钟`,'ok');
-    refreshAll();
-  } catch(e) { toast('网络错误','err'); }
+    toast('✅ RDP 已强制开启，5 分钟内保持开放','ok');
+    await refreshAll();
+  } catch(e) { toast('网络错误，请重试','err'); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '确认开启'; } }
 }
 
 async function doClose() {
@@ -652,7 +655,8 @@ function updateUI(s, history, logs) {
   // 按钮
   const btnOpen = $('btn-open');
   const btnClose = $('btn-close');
-  btnOpen.style.display  = (s.status==='BLOCKED'||s.status==='MANUAL_CLOSED') ? '' : 'none';
+  // 强制开启按钮常驻可见（除已处于强制开启态），避免「点了没反应」找不到按钮
+  btnOpen.style.display  = (s.status==='FORCE_OPEN') ? 'none' : '';
   btnClose.style.display = (s.status==='NORMAL'||s.status==='FORCE_OPEN') ? '' : 'none';
   btnClose.textContent = s.status==='FORCE_OPEN' ? '⛔ 立即关闭端口' : '⛔ 关闭 RDP 端口';
 
