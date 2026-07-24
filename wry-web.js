@@ -264,6 +264,16 @@ function isTodayTs(ts) {
     return shanghaiDateStr(ts) === shanghaiDateStr(Date.now());
 }
 
+// 最近一次攻击的时间戳（今天内），供前端判断“近5分钟内有攻击”。
+// 轻量读取，只取最大 ts，不做全量归并。
+function getLastAttackTs() {
+    try {
+        const hist = readJson(ATTACK_HISTORY_FILE, []);
+        const today = hist.filter(h => h.ts && isTodayTs(h.ts)).map(h => h.ts);
+        return today.length ? Math.max(...today) : null;
+    } catch (_) { return null; }
+}
+
 // 仅返回“今天”（Asia/Shanghai）的攻击事件，按时间倒序；每日 0:00 自然重置
 function getHistory() {
     const history = readJson(ATTACK_HISTORY_FILE, []);
@@ -350,6 +360,7 @@ async function refreshStatusAsync() {
         const state = getState();
         const fo = getForceOpen();
         cache.status = deriveStatus({ openCount, closedCount, state, forceOpen: fo });
+        try { cache.status.lastAttackTs = getLastAttackTs(); } catch (_) {}
         cache.forceOpen = fo.active ? { active: true, since: fo.since, until: fo.until, remainingMs: fo.remainingMs } : { active: false };
         try { cache.logs = getRecentLogs(); } catch (_) {}
         try { cache.history = getHistory(); } catch (_) {}

@@ -3,306 +3,297 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>wry合金防护 - RDP 安全监控</title>
+<title>wry合金防护 - RDP 入侵防御中枢</title>
 <style>
 :root {
-  --bg: #0b0e14;
-  --surface: #131821;
-  --surface2: #1c2330;
-  --border: #283040;
-  --border-light: #354050;
-  --text: #e8edf5;
-  --text2: #8a96a8;
-  --text3: #5a6678;
-  --green: #34d399;
-  --green-bg: rgba(52,211,153,0.12);
-  --red: #f87171;
-  --red-bg: rgba(248,113,113,0.12);
-  --blue: #60a5fa;
-  --blue-bg: rgba(96,165,250,0.12);
-  --yellow: #fbbf24;
-  --yellow-bg: rgba(251,191,36,0.12);
-  --radius: 12px;
-  --radius-sm: 8px;
-  --shadow: 0 4px 20px rgba(0,0,0,0.3);
+  --bg:        #05070d;
+  --bg2:       #080c16;
+  --surface:   #0b1120;
+  --surface2:  #101a2e;
+  --border:    #1b2942;
+  --border-lt: #28395c;
+  --text:      #e6f1ff;
+  --text2:     #8aa0c0;
+  --text3:     #54688c;
+  --green:     #39ff14;
+  --cyan:      #00f0ff;
+  --red:       #ff2e4d;
+  --amber:     #ffb000;
+  --purple:    #b14bff;
+  --mono: 'Consolas','SFMono-Regular','Courier New',monospace;
+  --sans: -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;
+  --radius: 14px;
+  --radius-sm: 10px;
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { height:100%; }
 body {
-  background: var(--bg);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(0,240,255,.06), transparent 60%),
+    radial-gradient(1000px 500px at -10% 110%, rgba(177,75,255,.05), transparent 60%),
+    var(--bg);
   color: var(--text);
-  font: 14px/1.6 -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  font: 14px/1.6 var(--sans);
   min-height: 100vh;
+  overflow-x: hidden;
+  transition: background .4s;
 }
-.container { max-width: 1040px; margin: 0 auto; padding: 24px 16px; }
+
+/* ===== 攻击态全屏特效层 ===== */
+#bg-fx {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  opacity: 0; transition: opacity .5s;
+}
+#bg-fx .grid {
+  position:absolute; inset:-50%;
+  background-image:
+    linear-gradient(rgba(255,46,77,.10) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,46,77,.10) 1px, transparent 1px);
+  background-size: 46px 46px;
+  transform: perspective(400px) rotateX(60deg);
+  animation: gridmove 3s linear infinite;
+}
+#bg-fx .scanline {
+  position:absolute; left:0; right:0; height:140px;
+  background: linear-gradient(180deg, transparent, rgba(255,46,77,.18), transparent);
+  animation: scanfall 3.5s linear infinite;
+}
+#bg-fx .vignette {
+  position:absolute; inset:0;
+  box-shadow: inset 0 0 240px 60px rgba(255,46,77,.35);
+}
+body.under-attack #bg-fx { opacity:1; }
+body.under-attack { background: radial-gradient(900px 500px at 50% -10%, rgba(255,46,77,.12), transparent 60%), var(--bg); }
+@keyframes gridmove { from{background-position:0 0} to{background-position:0 46px} }
+@keyframes scanfall { from{top:-160px} to{top:100%} }
+
+.container { position:relative; z-index:1; max-width:1080px; margin:0 auto; padding:26px 18px 60px; }
 
 /* ===== Header ===== */
-.header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 24px; padding-bottom: 16px;
-  border-bottom: 1px solid var(--border);
+.header { display:flex; align-items:center; justify-content:space-between; margin-bottom:22px; padding-bottom:16px; border-bottom:1px solid var(--border); }
+.header-left { display:flex; align-items:center; gap:14px; }
+.logo {
+  width:42px; height:42px; border-radius:11px;
+  background: linear-gradient(135deg, var(--cyan), var(--purple));
+  display:flex; align-items:center; justify-content:center;
+  font-size:22px; font-weight:800; color:#03060d;
+  box-shadow:0 0 18px rgba(0,240,255,.5);
 }
-.header-left { display: flex; align-items: center; gap: 14px; }
-.header-left .logo { width: 40px; height: 40px; background: linear-gradient(135deg,#34d399,#059669); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px; color:#fff; font-weight:700; }
-.header h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.3px; }
-.header h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 8px; }
-.header-right { text-align: right; }
-.clock { font-size: 20px; font-weight: 600; font-family: 'Consolas', monospace; color: var(--text2); }
-.clock-label { font-size: 11px; color: var(--text3); }
+.header h1 { font-size:20px; font-weight:800; letter-spacing:.5px; }
+.header h1 small { font-size:12px; color:var(--text2); font-weight:400; margin-left:8px; letter-spacing:0; }
+.header-right { text-align:right; }
+.clock { font:800 22px/1 var(--mono); color:var(--cyan); text-shadow:0 0 12px rgba(0,240,255,.5); }
+.clock-label { font-size:11px; color:var(--text3); letter-spacing:2px; }
 
-/* ===== Status Banner ===== */
+/* ===== 近期攻击温和提示 ===== */
+.recent-attack {
+  display:none; align-items:center; gap:10px; margin-bottom:16px;
+  padding:10px 16px; border-radius:var(--radius-sm);
+  border:1px solid var(--amber);
+  background:rgba(255,176,0,.08); color:var(--amber);
+  font-size:13px; font-weight:600;
+}
+.recent-attack .dot { width:8px;height:8px;border-radius:50%;background:var(--amber);box-shadow:0 0 8px var(--amber); animation:blink 1.2s infinite; }
+
+/* ===== 攻击横幅（BLOCKED）===== */
+.attack-banner {
+  display:none; position:relative; overflow:hidden;
+  align-items:center; gap:22px;
+  border:1px solid var(--red); border-radius:var(--radius);
+  padding:22px 26px; margin-bottom:18px;
+  background: linear-gradient(135deg, rgba(255,46,77,.18), rgba(255,46,77,.04));
+  box-shadow:0 0 40px rgba(255,46,77,.45), inset 0 0 40px rgba(255,46,77,.08);
+}
+.attack-banner::after {
+  content:''; position:absolute; inset:0; pointer-events:none;
+  background:repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(255,46,77,.05) 4px);
+  animation: hscan 5s linear infinite;
+}
+@keyframes hscan { from{background-position:0 0} to{background-position:0 80px} }
+.radar {
+  width:96px; height:96px; border-radius:50%; flex-shrink:0; position:relative;
+  border:2px solid rgba(255,46,77,.5);
+  background: radial-gradient(circle, rgba(255,46,77,.25), transparent 70%);
+  box-shadow:0 0 24px rgba(255,46,77,.4);
+}
+.radar::before {
+  content:''; position:absolute; inset:0; border-radius:50%;
+  background: conic-gradient(from 0deg, rgba(255,46,77,.65), transparent 70deg);
+  animation: spin 1.8s linear infinite;
+}
+.radar::after {
+  content:''; position:absolute; left:50%; top:50%; width:7px; height:7px;
+  background:var(--red); border-radius:50%; transform:translate(-50%,-50%);
+  box-shadow:0 0 12px var(--red);
+}
+@keyframes spin { to{ transform:rotate(360deg); } }
+.attack-main { flex:1; min-width:0; position:relative; z-index:1; }
+.attack-title {
+  font-size:27px; font-weight:900; letter-spacing:3px; color:var(--red);
+  text-shadow:0 0 16px rgba(255,46,77,.9); animation: flicker 1.4s infinite;
+}
+@keyframes flicker { 0%,100%{opacity:1} 48%{opacity:1} 50%{opacity:.45} 52%{opacity:1} }
+.attack-sub { margin-top:4px; font-size:13px; color:#ffd0d8; letter-spacing:1px; }
+.attack-ips { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+.ip-tag {
+  font-family:var(--mono); font-size:12px; padding:3px 11px;
+  border:1px solid var(--red); color:#ff8fa0; border-radius:20px;
+  background:rgba(255,46,77,.12); white-space:nowrap;
+  animation: ipin .35s ease;
+}
+@keyframes ipin { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none} }
+.attack-cd { text-align:center; flex-shrink:0; position:relative; z-index:1; min-width:120px; }
+.attack-cd-num { font:900 40px/1 var(--mono); color:var(--red); text-shadow:0 0 14px rgba(255,46,77,.8); }
+.attack-cd-label { font-size:11px; color:#ffb3bf; letter-spacing:1px; margin-top:4px; }
+
+/* ===== 状态横幅（非攻击态）===== */
 .status-banner {
-  border-radius: var(--radius);
-  padding: 20px 24px;
-  margin-bottom: 20px;
-  display: flex; align-items: center; gap: 16px;
-  border: 2px solid transparent;
-  transition: all 0.3s;
-  box-shadow: var(--shadow);
+  display:flex; align-items:center; gap:16px;
+  border-radius:var(--radius); padding:18px 22px; margin-bottom:18px;
+  border:1px solid var(--border); background:var(--surface);
+  transition: all .3s;
 }
-.status-banner.open    { background: var(--green-bg);  border-color: var(--green); }
-.status-banner.closed  { background: var(--red-bg);    border-color: var(--red); }
-.status-banner.force   { background: var(--blue-bg);   border-color: var(--blue); }
-.status-banner.manual  { background: var(--yellow-bg); border-color: var(--yellow); }
+.status-banner.open   { border-color:rgba(57,255,20,.5);  background:linear-gradient(135deg, rgba(57,255,20,.10), rgba(57,255,20,.02)); box-shadow:0 0 30px rgba(57,255,20,.18); }
+.status-banner.force  { border-color:rgba(0,240,255,.5);   background:linear-gradient(135deg, rgba(0,240,255,.10), rgba(0,240,255,.02)); box-shadow:0 0 30px rgba(0,240,255,.18); }
+.status-banner.manual { border-color:rgba(255,176,0,.5);   background:linear-gradient(135deg, rgba(255,176,0,.10), rgba(255,176,0,.02)); box-shadow:0 0 30px rgba(255,176,0,.18); }
+.status-banner .icon { font-size:42px; line-height:1; flex-shrink:0; filter:drop-shadow(0 0 8px currentColor); }
+.status-banner.open   .icon { color:var(--green); }
+.status-banner.force  .icon { color:var(--cyan); }
+.status-banner.manual .icon { color:var(--amber); }
+.status-banner .info { flex:1; min-width:0; }
+.status-banner .info h2 { font-size:19px; font-weight:800; margin-bottom:3px; letter-spacing:.5px; }
+.status-banner .info p { font-size:13px; color:var(--text2); }
+.status-banner .countdown { text-align:right; flex-shrink:0; min-width:96px; }
+.status-banner .countdown .num { font:800 34px/1 var(--mono); }
+.status-banner .countdown .label { font-size:11px; color:var(--text3); margin-top:2px; }
 
-.status-banner .icon { font-size: 44px; line-height: 1; flex-shrink: 0; }
-.status-banner .info { flex: 1; min-width: 0; }
-.status-banner .info h2 { font-size: 20px; font-weight: 700; margin-bottom: 2px; }
-.status-banner .info p { font-size: 13px; color: var(--text2); }
-.status-banner .countdown {
-  text-align: right; flex-shrink: 0;
-  min-width: 100px;
-}
-.status-banner .countdown .num { font-size: 36px; font-weight: 800; font-family: 'Consolas',monospace; line-height: 1; }
-.status-banner .countdown .label { font-size: 11px; color: var(--text3); margin-top: 2px; }
+/* ===== 健康警告 ===== */
+.health-bar { border-radius:var(--radius-sm); padding:10px 16px; margin-bottom:16px; font-size:13px; border:1px solid; display:flex; align-items:center; gap:10px; }
+.health-bar.critical { background:rgba(255,46,77,.08); border-color:var(--red); color:var(--red); }
+.health-bar.warning  { background:rgba(255,176,0,.08); border-color:var(--amber); color:var(--amber); }
+.health-bar .items { flex:1; display:flex; flex-direction:column; gap:2px; }
+.health-bar .items span { color:var(--text); font-size:12px; padding-left:8px; }
 
-/* ===== Health Warnings ===== */
-.health-bar {
-  border-radius: var(--radius-sm);
-  padding: 10px 16px;
-  margin-bottom: 16px;
-  font-size: 13px;
-  border: 1px solid;
-  display: flex; align-items: center; gap: 10px;
-}
-.health-bar.critical { background: var(--red-bg); border-color: var(--red); color: var(--red); }
-.health-bar.warning  { background: var(--yellow-bg); border-color: var(--yellow); color: var(--yellow); }
-.health-bar .items { flex: 1; display: flex; flex-direction: column; gap: 2px; }
-.health-bar .items span {
-  color: var(--text); font-size: 12px;
-  padding-left: 8px;
-}
-
-/* ===== Metric Cards ===== */
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 10px;
-  margin-bottom: 20px;
-}
+/* ===== 指标卡 ===== */
+.metrics { display:grid; grid-template-columns:repeat(5,1fr); gap:11px; margin-bottom:20px; }
 .metric {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 14px 12px;
-  text-align: center;
+  position:relative; overflow:hidden;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius-sm); padding:15px 12px; text-align:center;
+  transition: transform .15s, border-color .2s;
 }
-.metric .val { font-size: 24px; font-weight: 700; line-height: 1.2; }
-.metric .label { font-size: 11px; color: var(--text3); margin-top: 4px; }
-.metric .val.green  { color: var(--green); }
-.metric .val.red    { color: var(--red); }
-.metric .val.blue   { color: var(--blue); }
-.metric .val.yellow { color: var(--yellow); }
+.metric:hover { transform:translateY(-3px); border-color:var(--border-lt); }
+.metric::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:var(--accent,var(--cyan)); opacity:.7; box-shadow:0 0 10px var(--accent,var(--cyan)); }
+.metric .val { font:800 26px/1.1 var(--mono); color:var(--accent,var(--cyan)); text-shadow:0 0 10px var(--accent,var(--cyan)); }
+.metric .label { font-size:11px; color:var(--text3); margin-top:6px; letter-spacing:.5px; }
 
-/* ===== Buttons ===== */
-.actions { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+/* ===== 按钮 ===== */
+.actions { display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap; align-items:center; }
 .btn {
-  padding: 10px 24px;
-  border-radius: var(--radius-sm);
-  font-size: 14px; font-weight: 600;
-  cursor: pointer;
-  border: 2px solid transparent;
-  transition: all 0.15s;
-  font-family: inherit;
-  display: inline-flex; align-items: center; gap: 6px;
+  padding:11px 26px; border-radius:var(--radius-sm); font-size:14px; font-weight:700;
+  cursor:pointer; border:1.5px solid transparent; transition:all .15s;
+  font-family:inherit; display:inline-flex; align-items:center; gap:7px; letter-spacing:.5px;
 }
-.btn:hover { filter: brightness(1.15); transform: translateY(-1px); }
-.btn:active { transform: translateY(0); filter: brightness(0.95); }
-.btn:disabled { opacity: 0.35; cursor: not-allowed; filter: none; transform: none; }
-.btn-solid-green  { background: var(--green); color: #000; }
-.btn-outline-red  { background: transparent; color: var(--red); border-color: var(--red); }
-.btn-outline-blue { background: transparent; color: var(--blue); border-color: var(--blue); }
-.btn-outline-gray { background: transparent; color: var(--text2); border-color: var(--border); }
-.btn-outline-gray:hover { border-color: var(--text3); }
+.btn:hover { transform:translateY(-2px); }
+.btn:active { transform:translateY(0); }
+.btn:disabled { opacity:.35; cursor:not-allowed; transform:none; }
+.btn-danger  { background:rgba(255,46,77,.12); color:var(--red); border-color:var(--red); box-shadow:0 0 14px rgba(255,46,77,.3); }
+.btn-danger:hover { box-shadow:0 0 22px rgba(255,46,77,.6); background:rgba(255,46,77,.2); }
+.btn-cyan    { background:rgba(0,240,255,.12); color:var(--cyan); border-color:var(--cyan); box-shadow:0 0 14px rgba(0,240,255,.3); }
+.btn-cyan:hover { box-shadow:0 0 22px rgba(0,240,255,.6); background:rgba(0,240,255,.2); }
+.btn-ghost   { background:transparent; color:var(--text2); border-color:var(--border); }
+.btn-ghost:hover { border-color:var(--text3); color:var(--text); }
 
-/* ===== Info Boxes ===== */
-.info-box {
-  border-radius: var(--radius-sm);
-  padding: 12px 16px;
-  margin-bottom: 16px;
-  font-size: 13px; color: var(--text2); line-height: 1.7;
-  border-left: 4px solid var(--border);
-  background: var(--surface);
-}
-.info-box.green  { border-left-color: var(--green);  background: var(--green-bg); }
-.info-box.red    { border-left-color: var(--red);    background: var(--red-bg); }
-.info-box.blue   { border-left-color: var(--blue);   background: var(--blue-bg); }
-.info-box.yellow { border-left-color: var(--yellow); background: var(--yellow-bg); }
-.info-box strong { color: var(--text); }
+/* ===== 信息条 ===== */
+.info-box { border-radius:var(--radius-sm); padding:12px 16px; margin-bottom:16px; font-size:13px; color:var(--text2); line-height:1.7; border-left:4px solid var(--border); background:var(--surface); }
+.info-box.green  { border-left-color:var(--green);  background:rgba(57,255,20,.06); }
+.info-box.red    { border-left-color:var(--red);    background:rgba(255,46,77,.06); }
+.info-box.blue   { border-left-color:var(--cyan);   background:rgba(0,240,255,.06); }
+.info-box.yellow { border-left-color:var(--amber); background:rgba(255,176,0,.06); }
+.info-box strong { color:var(--text); }
 
 /* ===== Tabs ===== */
-.tab-bar { display: flex; gap: 0; margin-bottom: 0; border-bottom: 1px solid var(--border); }
-.tab-item {
-  padding: 10px 20px;
-  cursor: pointer; font-size: 13px; color: var(--text2);
-  border: none; background: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  font-family: inherit; font-weight: 500;
-  transition: all 0.15s;
-}
-.tab-item:hover { color: var(--text); }
-.tab-item.active { color: var(--text); border-bottom-color: var(--blue); font-weight: 700; }
+.tab-bar { display:flex; gap:0; border-bottom:1px solid var(--border); }
+.tab-item { padding:11px 20px; cursor:pointer; font-size:13px; color:var(--text2); border:none; background:none; border-bottom:2px solid transparent; margin-bottom:-1px; font-family:inherit; font-weight:600; transition:all .15s; }
+.tab-item:hover { color:var(--text); }
+.tab-item.active { color:var(--cyan); border-bottom-color:var(--cyan); text-shadow:0 0 8px rgba(0,240,255,.5); }
 
 /* ===== Panels ===== */
-.panel-wrap { display: none; }
-.panel-wrap.active { display: block; }
+.panel-wrap { display:none; }
+.panel-wrap.active { display:block; }
 
 /* ===== Card ===== */
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  margin-top: 16px;
-  overflow: hidden;
-}
-.card-header {
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px; font-weight: 600; color: var(--text2);
-  display: flex; align-items: center; gap: 6px;
-}
-.card-body { padding: 0; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); margin-top:16px; overflow:hidden; }
+.card-header { padding:11px 16px; border-bottom:1px solid var(--border); font-size:12px; font-weight:700; color:var(--text2); display:flex; align-items:center; gap:6px; letter-spacing:.5px; }
+.card-body { padding:0; }
 
 /* ===== Table ===== */
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th {
-  text-align: left; padding: 8px 16px;
-  color: var(--text3); font-weight: 600; font-size: 11px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface2);
-}
-td { padding: 10px 16px; border-bottom: 1px solid var(--border); }
-tr:last-child td { border-bottom: none; }
-tr:hover td { background: rgba(255,255,255,0.03); }
-.td-ip { font-family: 'Consolas', monospace; color: #fbbf24; font-size: 13px; }
-.td-num { font-weight: 700; color: var(--red); font-size: 14px; }
-.td-time { color: var(--text2); font-size: 12px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; padding:9px 16px; color:var(--text3); font-weight:700; font-size:11px; border-bottom:1px solid var(--border); background:var(--surface2); letter-spacing:.5px; }
+td { padding:10px 16px; border-bottom:1px solid var(--border); }
+tr:last-child td { border-bottom:none; }
+tr:hover td { background:rgba(0,240,255,.04); }
+.td-ip { font-family:var(--mono); color:var(--amber); font-size:13px; }
+.td-num { font-weight:800; color:var(--red); font-size:14px; font-family:var(--mono); }
+.td-time { color:var(--text2); font-size:12px; font-family:var(--mono); }
 
-.tag {
-  display: inline-block; padding: 2px 8px; border-radius: 6px;
-  font-size: 11px; font-weight: 600;
-}
-.tag-green  { background: var(--green-bg);  color: var(--green); }
-.tag-red    { background: var(--red-bg);    color: var(--red); }
-.tag-blue   { background: var(--blue-bg);   color: var(--blue); }
-.tag-yellow { background: var(--yellow-bg); color: var(--yellow); }
-.tag-gray   { background: var(--surface2);  color: var(--text2); }
+.tag { display:inline-block; padding:2px 9px; border-radius:6px; font-size:11px; font-weight:700; }
+.tag-green  { background:rgba(57,255,20,.12);  color:var(--green); }
+.tag-red    { background:rgba(255,46,77,.12);  color:var(--red); }
+.tag-blue   { background:rgba(0,240,255,.12);  color:var(--cyan); }
+.tag-yellow { background:rgba(255,176,0,.12);  color:var(--amber); }
+.tag-gray   { background:var(--surface2); color:var(--text2); }
 
-.empty-state {
-  text-align: center; padding: 40px 20px; color: var(--text3);
-}
-.empty-state .icon { font-size: 36px; margin-bottom: 8px; }
+.empty-state { text-align:center; padding:40px 20px; color:var(--text3); }
+.empty-state .icon { font-size:36px; margin-bottom:8px; }
 
-/* ===== Firewall Rule List ===== */
-.rule-row {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 9px 16px; border-bottom: 1px solid var(--border); font-size: 12px;
-}
-.rule-row:last-child { border-bottom: none; }
-.rule-row .name { font-family: 'Consolas',monospace; color: var(--text); }
-.rule-row .on  { color: var(--green); font-weight: 600; }
-.rule-row .off { color: var(--red); font-weight: 600; }
+/* ===== 规则行 ===== */
+.rule-row { display:flex; justify-content:space-between; align-items:center; padding:9px 16px; border-bottom:1px solid var(--border); font-size:12px; }
+.rule-row:last-child { border-bottom:none; }
+.rule-row .name { font-family:var(--mono); color:var(--text); }
+.rule-row .on  { color:var(--green); font-weight:700; }
+.rule-row .off { color:var(--red); font-weight:700; }
 
-/* ===== Log ===== */
-.log-box {
-  font-family: 'Consolas','Courier New',monospace;
-  font-size: 12px; background: #000;
-  color: #c9d1d9; padding: 14px;
-  max-height: 400px; overflow-y: auto;
-  line-height: 1.8;
-  white-space: pre-wrap; word-break: break-all;
-}
-.log-box .danger  { color: #ff7b72; }
-.log-box .success { color: #7ee787; }
-.log-box .warning { color: #e3b341; }
-.log-box .info    { color: #79c0ff; }
+/* ===== 日志 ===== */
+.log-box { font-family:var(--mono); font-size:12px; background:#02040a; color:#9fe6b0; padding:14px; max-height:400px; overflow-y:auto; line-height:1.8; white-space:pre-wrap; word-break:break-all; }
+.log-box .danger  { color:#ff7b88; }
+.log-box .success { color:#7ee787; }
+.log-box .warning { color:#ffd479; }
+.log-box .info    { color:#79c0ff; }
 
 /* ===== Modal ===== */
-.modal-mask {
-  display: none;
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,0.7);
-  z-index: 100;
-  align-items: center; justify-content: center;
-}
-.modal-mask.show { display: flex; }
-.modal-box {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 28px;
-  width: 400px; max-width: 90vw;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-}
-.modal-box .icon { font-size: 44px; text-align: center; margin-bottom: 12px; }
-.modal-box h3 { text-align: center; font-size: 18px; margin-bottom: 10px; }
-.modal-box .desc { font-size: 13px; color: var(--text2); margin-bottom: 12px; line-height: 1.6; }
-.modal-box .warn { color: var(--yellow); font-weight: 600; }
-.modal-box label { font-size: 12px; color: var(--text3); margin-bottom: 6px; display: block; }
-.modal-box input {
-  width: 100%;
-  padding: 10px 12px;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-size: 14px;
-  outline: none;
-  margin-bottom: 14px;
-  font-family: inherit;
-}
-.modal-box input:focus { border-color: var(--blue); }
-.modal-box .btns { display: flex; gap: 10px; justify-content: flex-end; }
-.modal-box .btns .btn { padding: 8px 20px; }
+.modal-mask { display:none; position:fixed; inset:0; background:rgba(2,4,10,.78); z-index:100; align-items:center; justify-content:center; backdrop-filter:blur(3px); }
+.modal-mask.show { display:flex; }
+.modal-box { background:var(--surface); border:1px solid var(--border-lt); border-radius:var(--radius); padding:28px; width:410px; max-width:92vw; box-shadow:0 24px 70px rgba(0,0,0,.6); }
+.modal-box .icon { font-size:44px; text-align:center; margin-bottom:12px; filter:drop-shadow(0 0 10px currentColor); }
+.modal-box h3 { text-align:center; font-size:18px; margin-bottom:10px; font-weight:800; }
+.modal-box .desc { font-size:13px; color:var(--text2); margin-bottom:12px; line-height:1.6; }
+.modal-box .warn { color:var(--amber); font-weight:700; }
+.modal-box label { font-size:12px; color:var(--text3); margin-bottom:6px; display:block; }
+.modal-box input { width:100%; padding:11px 13px; background:var(--surface2); border:1px solid var(--border-lt); border-radius:var(--radius-sm); color:var(--text); font-size:14px; outline:none; margin-bottom:14px; font-family:inherit; }
+.modal-box input:focus { border-color:var(--cyan); box-shadow:0 0 12px rgba(0,240,255,.35); }
+.modal-box .btns { display:flex; gap:10px; justify-content:flex-end; }
+.modal-box .btns .btn { padding:9px 22px; }
 
 /* ===== Toast ===== */
-#toast {
-  position: fixed;
-  bottom: 24px; right: 24px;
-  padding: 12px 20px;
-  border-radius: var(--radius-sm);
-  font-size: 14px; font-weight: 600;
-  z-index: 200;
-  display: none;
-  animation: slideIn 0.25s ease;
-  box-shadow: var(--shadow);
-}
-#toast.show { display: block; }
-#toast.ok  { background: var(--green); color: #000; }
-#toast.err { background: var(--red); color: #fff; }
-@keyframes slideIn {
-  from { transform: translateX(80px); opacity: 0; }
-  to   { transform: translateX(0); opacity: 1; }
-}
+#toast { position:fixed; bottom:24px; right:24px; padding:13px 22px; border-radius:var(--radius-sm); font-size:14px; font-weight:700; z-index:200; display:none; animation:slideIn .25s ease; box-shadow:0 10px 30px rgba(0,0,0,.5); }
+#toast.show { display:block; }
+#toast.ok  { background:var(--green); color:#021; box-shadow:0 0 22px rgba(57,255,20,.5); }
+#toast.err { background:var(--red); color:#fff; box-shadow:0 0 22px rgba(255,46,77,.5); }
+@keyframes slideIn { from{transform:translateX(90px);opacity:0} to{transform:none;opacity:1} }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
 
-@media (max-width: 720px) {
-  .metrics { grid-template-columns: repeat(2,1fr); }
-  .status-banner { flex-direction: column; text-align: center; }
-  .status-banner .countdown { text-align: center; }
+@media (max-width:760px) {
+  .metrics { grid-template-columns:repeat(2,1fr); }
+  .attack-banner { flex-direction:column; text-align:center; }
+  .attack-ips { justify-content:center; }
+  .status-banner { flex-direction:column; text-align:center; }
+  .status-banner .countdown { text-align:center; }
 }
 </style>
 </head>
 <body>
+<div id="bg-fx"><div class="grid"></div><div class="scanline"></div><div class="vignette"></div></div>
 <div class="container">
 
   <!-- Header -->
@@ -310,19 +301,39 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     <div class="header-left">
       <div class="logo">W</div>
       <div>
-        <h1>wry合金防护 <small>RDP 安全网关</small></h1>
+        <h1>wry合金防护 <small>RDP 入侵防御中枢</small></h1>
       </div>
     </div>
     <div class="header-right">
       <div class="clock" id="clock">--:--:--</div>
-      <div class="clock-label">最后更新</div>
+      <div class="clock-label">实时时钟</div>
     </div>
   </div>
 
-  <!-- Health warnings -->
+  <!-- 近期攻击温和提示 -->
+  <div class="recent-attack" id="recent-attack">
+    <span class="dot"></span>
+    <span>⚠ 近 5 分钟内检测到攻击记录（端口已自动恢复），请保持警惕</span>
+  </div>
+
+  <!-- 攻击横幅（BLOCKED 时显示） -->
+  <div class="attack-banner" id="attack-banner">
+    <div class="radar"></div>
+    <div class="attack-main">
+      <div class="attack-title">⚠ SYSTEM UNDER ATTACK</div>
+      <div class="attack-sub">检测到暴力破解 · RDP 端口已关闭 · 正在拦截入侵</div>
+      <div class="attack-ips" id="attack-ips"></div>
+    </div>
+    <div class="attack-cd">
+      <div class="attack-cd-num" id="attack-cd-num">--:--</div>
+      <div class="attack-cd-label">自动恢复倒计时</div>
+    </div>
+  </div>
+
+  <!-- 健康警告 -->
   <div id="health-warnings"></div>
 
-  <!-- Status Banner -->
+  <!-- 状态横幅（非攻击态） -->
   <div class="status-banner" id="status-banner">
     <div class="icon" id="status-icon">🛡</div>
     <div class="info">
@@ -335,34 +346,26 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     </div>
   </div>
 
-  <!-- Metrics -->
+  <!-- 指标卡 -->
   <div class="metrics">
-    <div class="metric"><div class="val green" id="m-open">-</div><div class="label">已启用规则</div></div>
-    <div class="metric"><div class="val red" id="m-closed">-</div><div class="label">已禁用规则</div></div>
-    <div class="metric"><div class="val yellow" id="m-attacks">0</div><div class="label">今日攻击事件</div></div>
-    <div class="metric"><div class="val red" id="m-fails">0</div><div class="label">今日失败总数</div></div>
-    <div class="metric"><div class="val blue" id="m-ips">0</div><div class="label">攻击 IP 数</div></div>
+    <div class="metric" style="--accent:var(--green)"><div class="val" id="m-open">-</div><div class="label">已启用规则</div></div>
+    <div class="metric" style="--accent:var(--red)"><div class="val" id="m-closed">-</div><div class="label">已禁用规则</div></div>
+    <div class="metric" style="--accent:var(--amber)"><div class="val" id="m-attacks">0</div><div class="label">今日攻击事件</div></div>
+    <div class="metric" style="--accent:var(--red)"><div class="val" id="m-fails">0</div><div class="label">今日失败总数</div></div>
+    <div class="metric" style="--accent:var(--cyan)"><div class="val" id="m-ips">0</div><div class="label">攻击 IP 数</div></div>
   </div>
 
-  <!-- Actions -->
+  <!-- 操作按钮 -->
   <div class="actions">
-    <button class="btn btn-outline-red"  id="btn-close" onclick="showModal('modal-close')">
-      ⛔ 关闭 RDP 端口
-    </button>
-    <button class="btn btn-outline-blue" id="btn-open"  onclick="showModal('modal-open')">
-      🚀 强制开启 RDP
-    </button>
+    <button class="btn btn-danger"  id="btn-close" onclick="showModal('modal-close')">⛔ 关闭 RDP 端口</button>
+    <button class="btn btn-cyan"    id="btn-open"  onclick="showModal('modal-open')">🚀 强制开启 RDP</button>
     <span style="font-size:12px;color:var(--text3);margin-left:auto" id="btn-hint"></span>
   </div>
 
-  <!-- Info boxes (one shown at a time) -->
+  <!-- 信息条 -->
   <div class="info-box green"  id="box-normal">
     <strong>🛡 监控中</strong> — RDP 端口正常开放。检测到同 IP <strong>5 次</strong>以上登录失败（30 秒窗口）自动关闭端口 5 分钟。
     内网 IP 全部放行，跳板机 192.168.3.88 参与检测。
-  </div>
-  <div class="info-box red"    id="box-blocked" style="display:none">
-    <strong>🚨 受到攻击，端口已关闭！</strong> 检测到暴力破解，RDP 已封禁。
-    <strong id="info-blocked-countdown">5 分钟</strong>后自动恢复。
   </div>
   <div class="info-box blue"   id="box-force" style="display:none">
     <strong>✅ 强制开启中</strong> — RDP 端口已临时开放，防护暂停。
@@ -431,15 +434,15 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 <!-- Modal: Open -->
 <div class="modal-mask" id="modal-open">
   <div class="modal-box">
-    <div class="icon">🚀</div>
+    <div class="icon" style="color:var(--cyan)">🚀</div>
     <h3>强制开启 RDP 端口</h3>
     <div class="desc">启用所有 RDP 防火墙规则，开放端口 <strong>5 分钟</strong>。到期后若仍在遭攻击将重新封禁。</div>
     <p class="warn" style="font-size:12px;margin-bottom:10px;">⚠️ 请确认是你本人操作</p>
     <label>输入密码确认身份</label>
     <input type="password" id="pwd-open" placeholder="输入后端密码" onkeydown="if(event.key==='Enter')doOpen()">
     <div class="btns">
-      <button class="btn btn-outline-gray" onclick="hideModal('open')">取消</button>
-      <button class="btn btn-solid-green" onclick="doOpen()">确认开启</button>
+      <button class="btn btn-ghost" onclick="hideModal('open')">取消</button>
+      <button class="btn btn-cyan" onclick="doOpen()">确认开启</button>
     </div>
   </div>
 </div>
@@ -447,15 +450,15 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 <!-- Modal: Close -->
 <div class="modal-mask" id="modal-close">
   <div class="modal-box">
-    <div class="icon">⛔</div>
+    <div class="icon" style="color:var(--red)">⛔</div>
     <h3>关闭 RDP 端口</h3>
     <div class="desc">禁用所有 RDP 防火墙规则，关闭远程桌面访问。</div>
     <p class="warn" style="font-size:12px;margin-bottom:10px;">⚠️ 端口将保持关闭，直到你手动开启（不会自动恢复）</p>
     <label>输入密码确认身份</label>
     <input type="password" id="pwd-close" placeholder="输入后端密码" onkeydown="if(event.key==='Enter')doClose()">
     <div class="btns">
-      <button class="btn btn-outline-gray" onclick="hideModal('close')">取消</button>
-      <button class="btn btn-outline-red" onclick="doClose()">确认关闭</button>
+      <button class="btn btn-ghost" onclick="hideModal('close')">取消</button>
+      <button class="btn btn-danger" onclick="doClose()">确认关闭</button>
     </div>
   </div>
 </div>
@@ -474,6 +477,7 @@ if (window.__PRELOAD__ && window.__PRELOAD__.s) {
 }
 
 let cdIntv = null;
+let lastAttackIpKey = '';
 
 function $(id) { return document.getElementById(id); }
 
@@ -485,13 +489,15 @@ function switchTab(name) {
 }
 
 function showModal(t) { $(`modal-${t}`).classList.add('show'); setTimeout(()=>$(`modal-${t} input`).focus(),50); }
-function hideModal(t) { $(`modal-${t}`).classList.remove('show'); const i=$( `modal-${t} input`); if(i)i.value=''; }
+function hideModal(t) { $(`modal-${t}`).classList.remove('show'); const i=$(`modal-${t} input`); if(i)i.value=''; }
 
 function toast(msg, type='ok') {
   const t = $('toast');
   t.textContent = msg; t.className = 'show ' + type;
   setTimeout(()=>t.className='', 3500);
 }
+
+function clearCd() { if (cdIntv) { clearInterval(cdIntv); cdIntv = null; } }
 
 function fmtCD(ms) {
   const s = Math.max(0, Math.floor(ms/1000));
@@ -553,54 +559,88 @@ function renderHealth(health) {
   box.innerHTML = html;
 }
 
+function renderAttackIPs(ips) {
+  const key = (ips||[]).join(',');
+  if (key === lastAttackIpKey) return;  // 不变则不重建，避免动画每轮重播
+  lastAttackIpKey = key;
+  const box = $('attack-ips');
+  if (!ips || !ips.length) { box.innerHTML = '<span class="ip-tag" style="opacity:.55">来源未知</span>'; return; }
+  box.innerHTML = ips.map(ip=>`<span class="ip-tag">${escapeHtml(ip)}</span>`).join('');
+}
+
 function updateUI(s, history, logs) {
   const banner = $('status-banner');
-  const mapper = { NORMAL:'open', BLOCKED:'closed', FORCE_OPEN:'force', MANUAL_CLOSED:'manual' };
-  banner.className = 'status-banner ' + (mapper[s.status]||'open');
+  const attackBanner = $('attack-banner');
 
-  const titles = {
-    NORMAL:'RDP 端口开放 — 防护监控中',
-    BLOCKED:'⚠ 受到攻击，RDP 端口已关闭',
-    FORCE_OPEN:'RDP 强制开启中 — 用户手动操作',
-    MANUAL_CLOSED:'RDP 端口已手动关闭',
-  };
-  const descs = {
-    NORMAL:`${s.openCount} 条规则已启用 · 阈值：同 IP ${s.threshold} 次 / ${s.lookback} 秒`,
-    BLOCKED:`检测到暴力破解，端口已封禁。剩余 ${s.blockedRemaining || 0} 分钟自动恢复。`,
-    FORCE_OPEN:`强制开启至 ${s.forceOpenUntil || '—'}，到期自动关闭。`,
-    MANUAL_CLOSED:'不会自动恢复，点击「强制开启 RDP」重新打开。',
-  };
-  const icons = { NORMAL:'🛡', BLOCKED:'🚨', FORCE_OPEN:'✅', MANUAL_CLOSED:'🔒' };
-
-  $('status-title').textContent = titles[s.status]||s.status;
-  $('status-desc').textContent = descs[s.status]||'';
-  $('status-icon').textContent = icons[s.status]||'🛡';
-
-  // Clock
-  $('clock').textContent = new Date().toLocaleTimeString('zh-CN');
-
-  // Countdown
-  if (s.status==='FORCE_OPEN' && s.forceOpenRemaining!=null) {
-    $('countdown-num').textContent = fmtCD(s.forceOpenRemaining);
-    $('countdown-label').textContent = '强制开启剩余';
-    if (!cdIntv) cdIntv = setInterval(refreshAll, 1000);
-  } else if (s.status==='BLOCKED' && s.blockedRemainingMs!=null) {
-    $('countdown-num').textContent = fmtCD(s.blockedRemainingMs);
-    $('countdown-label').textContent = '端口关闭剩余';
-    if (!cdIntv) cdIntv = setInterval(refreshAll, 1000);
-    const cd = $('info-blocked-countdown');
-    if (cd) cd.textContent = (s.blockedRemaining||'?') + ' 分钟';
-  } else if (s.status==='MANUAL_CLOSED') {
-    $('countdown-num').textContent = '🔒';
-    $('countdown-label').textContent = '已手动关闭';
-    if (cdIntv) { clearInterval(cdIntv); cdIntv = null; }
+  // ===== 攻击态（BLOCKED）=====
+  if (s.status === 'BLOCKED') {
+    document.body.classList.add('under-attack');
+    banner.style.display = 'none';
+    attackBanner.style.display = 'flex';
+    renderAttackIPs(s.blockedIPs || []);
+    if (s.blockedRemainingMs != null) {
+      $('attack-cd-num').textContent = fmtCD(s.blockedRemainingMs);
+      if (!cdIntv) cdIntv = setInterval(refreshAll, 1000);
+    }
+    $('box-normal').style.display = 'none';
+    $('box-force').style.display = 'none';
+    $('box-manual').style.display = 'none';
   } else {
-    $('countdown-num').textContent = '🛡';
-    $('countdown-label').textContent = '系统正常';
-    if (cdIntv) { clearInterval(cdIntv); cdIntv = null; }
+    document.body.classList.remove('under-attack');
+    attackBanner.style.display = 'none';
+    banner.style.display = 'flex';
+    lastAttackIpKey = '';  // 复位，下次攻击重新播动画
+    const mapper = { NORMAL:'open', FORCE_OPEN:'force', MANUAL_CLOSED:'manual' };
+    banner.className = 'status-banner ' + (mapper[s.status]||'open');
+
+    const titles = {
+      NORMAL:'RDP 端口开放 — 防护监控中',
+      FORCE_OPEN:'RDP 强制开启中 — 用户手动操作',
+      MANUAL_CLOSED:'RDP 端口已手动关闭',
+    };
+    const descs = {
+      NORMAL:`${s.openCount} 条规则已启用 · 阈值：同 IP ${s.threshold} 次 / ${s.lookback} 秒`,
+      FORCE_OPEN:`强制开启至 ${s.forceOpenUntil || '—'}，到期自动关闭。`,
+      MANUAL_CLOSED:'不会自动恢复，点击「强制开启 RDP」重新打开。',
+    };
+    const icons = { NORMAL:'🛡', FORCE_OPEN:'✅', MANUAL_CLOSED:'🔒' };
+
+    $('status-title').textContent = titles[s.status]||s.status;
+    $('status-desc').textContent = descs[s.status]||'';
+    $('status-icon').textContent = icons[s.status]||'🛡';
+
+    // 倒计时
+    if (s.status==='FORCE_OPEN' && s.forceOpenRemaining!=null) {
+      $('countdown-num').textContent = fmtCD(s.forceOpenRemaining);
+      $('countdown-num').style.color = 'var(--cyan)';
+      $('countdown-label').textContent = '强制开启剩余';
+      if (!cdIntv) cdIntv = setInterval(refreshAll, 1000);
+    } else if (s.status==='MANUAL_CLOSED') {
+      $('countdown-num').textContent = '🔒';
+      $('countdown-num').style.color = 'var(--amber)';
+      $('countdown-label').textContent = '已手动关闭';
+      clearCd();
+    } else {
+      $('countdown-num').textContent = '🛡';
+      $('countdown-num').style.color = 'var(--green)';
+      $('countdown-label').textContent = '系统正常';
+      clearCd();
+    }
+
+    // 信息条
+    $('box-normal').style.display  = s.status==='NORMAL'?'':'none';
+    $('box-force').style.display   = s.status==='FORCE_OPEN'?'':'none';
+    $('box-manual').style.display  = s.status==='MANUAL_CLOSED'?'':'none';
   }
 
-  // Metrics
+  // 近期攻击温和提示（NORMAL 但近 5 分钟有攻击记录）
+  const recent = s.lastAttackTs && (Date.now() - s.lastAttackTs) < 5*60*1000;
+  $('recent-attack').style.display = (s.status==='NORMAL' && recent) ? 'flex' : 'none';
+
+  // 时钟
+  $('clock').textContent = new Date().toLocaleTimeString('zh-CN');
+
+  // 指标
   $('m-open').textContent = s.openCount ?? '-';
   $('m-closed').textContent = s.closedCount ?? '-';
   $('m-attacks').textContent = (history||[]).length;
@@ -609,20 +649,14 @@ function updateUI(s, history, logs) {
   for (const h of (history||[])) for (const ip of Object.keys(h.ipCounts||{})) ipSet.add(ip);
   $('m-ips').textContent = ipSet.size;
 
-  // Buttons
+  // 按钮
   const btnOpen = $('btn-open');
   const btnClose = $('btn-close');
   btnOpen.style.display  = (s.status==='BLOCKED'||s.status==='MANUAL_CLOSED') ? '' : 'none';
   btnClose.style.display = (s.status==='NORMAL'||s.status==='FORCE_OPEN') ? '' : 'none';
   btnClose.textContent = s.status==='FORCE_OPEN' ? '⛔ 立即关闭端口' : '⛔ 关闭 RDP 端口';
 
-  // Info boxes
-  $('box-normal').style.display  = s.status==='NORMAL'?'':'none';
-  $('box-blocked').style.display = s.status==='BLOCKED'?'':'none';
-  $('box-force').style.display   = s.status==='FORCE_OPEN'?'':'none';
-  $('box-manual').style.display  = s.status==='MANUAL_CLOSED'?'':'none';
-
-  // Tables
+  // 表格
   renderOverview(history||[]);
   renderHistory(history||[]);
   renderRules(s);
@@ -631,9 +665,7 @@ function updateUI(s, history, logs) {
 
 function renderOverview(h) {
   const mergedUsers = {}, mergedIPs = {};
-  let totalEv=0;
   for (const r of h) {
-    totalEv++;
     for (const [u,c] of Object.entries(r.userCounts||{})) mergedUsers[u] = (mergedUsers[u]||0)+c;
     for (const [ip,c] of Object.entries(r.ipCounts||{})) mergedIPs[ip] = (mergedIPs[ip]||0)+c;
   }
