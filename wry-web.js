@@ -23,6 +23,13 @@
 //   进程启动时清除残留的「手动关闭」/「已过期攻击封禁」状态并确保 RDP 规则启用；
 //   攻击检测循环正常态下若无达阈值的攻击 IP 则始终确保端口开放（防御性自动恢复），
 //   仅在检测到暴力破解（同 IP 失败 ≥ THRESHOLD 次 / LOOKBACK 秒）时才关闭端口并倒计时自动恢复。
+// v3.21 变更（2026-07-27）：修复「关闭 RDP 端口没效果」的根本原因。
+//   根因：本机防火墙由【域 GPO 托管】（netsh 显示 LocalFirewallRules: N/A 仅 GPO 存储），
+//   所有 Enable/Disable/New/Remove-NetFirewallRule 均返回「拒绝访问」，禁用规则的操作被静默拒绝，
+//   所以端口永不真正关闭（手动关闭、攻击封禁全都无效）——这正是此前「关闭/攻击没反应」的真实根因。
+//   改为以【控制远程桌面服务 TermService】作为开关 RDP 端口的权威机制：关闭=停止服务（端口真正停止监听、
+//   RDP 不可达），开启=启动服务；Web 进程以 SYSTEM 运行（Session 0）具备服务控制权限。
+//   防火墙规则变更降级为「可写环境下生效」的尽力而为附加层（启动探测 fwWritable，GPO 下自动跳过）。
 
 const http = require('http');
 const fs = require('fs');
@@ -229,35 +236,63 @@ function formatTime(date) {
 // 关键：不在这里用 -Enabled 过滤——当 0 条匹配时 Get-NetFirewallRule -Enabled X 会直接抛错，
 // 被 psRaw 吞掉后返回 ''，导致「禁用成功(剩0)」与「查询失败(也是0)」无法区分。
 // 改为一次性取出后在 JS 里判断 Enabled，0 条时也只是返回空数组，不会报错。
-function getRDPRulesRaw() {
-    const out = psRaw(
-        "Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Select-Object Name,Enabled | ConvertTo-Json -Compress"
-    );
-    let arr = [];
-    try { arr = JSON.parse(out); } catch (_) { return []; }
-    if (!Array.isArray(arr)) arr = (arr && arr.Name) ? [arr] : [];
-    return arr.map(r => ({ name: r.Name, enabled: r.Enabled === true || r.Enabled === 'True' || r.Enabled === 1 || r.Enabled === '1' }));
+// ============================================================================
+// RDP 开/关的真实机制：控制「远程桌面服务 (TermService)」
+// ----------------------------------------------------------------------------
+// 关键背景：本机防火墙由域 GPO 托管（netsh 显示 LocalFirewallRules: N/A 仅 GPO 存储），
+// 所有 Enable/Disable/New/Remove-NetFirewallRule 均返回「拒绝访问」，根本无法修改规则。
+// 这就是「关闭 RDP / 攻击封禁 端口却没反应」的真正根因——禁用规则的操作被 GPO 静默拒绝。
+// 因此改为：关闭 = 停止 TermService（端口真正停止监听、RDP 不可达）；开启 = 启动 TermService。
+// Web 进程以 SYSTEM 运行（Session 0），具备服务控制权限，此机制稳定可靠。
+// 防火墙规则变更作为「尽力而为」附加层保留（仅在防火墙可写环境下生效；GPO 下静默跳过）。
+// ============================================================================
+let _rdpServiceRunning = true;       // 同步热路径使用的缓存（由后台刷新更新）
+let fwWritable = true;               // 防火墙规则是否可写（GPO 托管时为 false）
+const RDP_SERVICE = 'TermService';
+
+async function isRdpServiceRunning() {
+    try {
+        const out = await psAsync("Get-Service -Name 'TermService' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status", 15000);
+        return /Running/i.test(String(out));
+    } catch (_) { return false; }
 }
 
+async function startRdpService() {
+    let ok = false;
+    try { await psAsync("Start-Service -Name 'TermService' -ErrorAction Stop", 25000); } catch (_) {}
+    for (let i = 0; i < 14; i++) { await sleep(500); if (await isRdpServiceRunning()) { ok = true; break; } }
+    if (!ok) ok = await isRdpServiceRunning();
+    return ok;
+}
+
+async function stopRdpService() {
+    let ok = false;
+    try { await psAsync("Stop-Service -Name 'TermService' -Force -ErrorAction Stop", 25000); } catch (_) {}
+    for (let i = 0; i < 14; i++) { await sleep(500); if (!(await isRdpServiceRunning())) { ok = true; break; } }
+    if (!ok) ok = !(await isRdpServiceRunning());
+    return ok;
+}
+
+// 防火墙规则视角（用于展示/兜底；权威「开/关」状态以 TermService 为准）
+function getRDPRulesRaw() {
+    return [{ name: 'TermService (远程桌面服务)', enabled: _rdpServiceRunning }];
+}
 function getRDPOpenCount() {
     try { return getRDPRulesRaw().filter(r => r.enabled).length; } catch (_) { return 0; }
 }
-
 // 异步版（不阻塞事件循环）：用于检测循环 / 校验轮询
 async function getRDPOpenCountAsync() {
-    try { return (await getRDPRulesAsync()).filter(r => r.enabled).length; } catch (_) { return 0; }
+    try { return (await isRdpServiceRunning()) ? 1 : 0; } catch (_) { return 0; }
 }
-
 function getRDPClosedCount() {
     try { return getRDPRulesRaw().filter(r => !r.enabled).length; } catch (_) { return 0; }
 }
 
+// 异步获取 RDP 规则视角（权威状态以 TermService 是否运行判定）
 async function getRDPRulesAsync() {
-    const out = await psAsync("Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -Action Allow | Select-Object Name,Enabled | ConvertTo-Json -Compress", 30000);
-    let arr = [];
-    try { arr = JSON.parse(out); } catch (_) { return []; }
-    if (!Array.isArray(arr)) arr = (arr && arr.Name) ? [arr] : [];
-    return arr.map(r => ({ name: r.Name, enabled: r.Enabled === true || r.Enabled === 'True' || r.Enabled === 1 || r.Enabled === '1' }));
+    const running = await isRdpServiceRunning();
+    _rdpServiceRunning = running;
+    return [{ name: 'TermService (远程桌面服务)', enabled: running }];
 }
 
 // 在同一 PowerShell 会话内完成规则启用/禁用（不内联校验，校验交给 JS 侧 getRDPOpenCount）
@@ -272,22 +307,24 @@ const FW_DISABLE_SCRIPT = '$group = "@FirewallAPI.dll,-28752"; $rules = @(Get-Ne
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function enableRDPRules() {
-    let open = 0;
-    try { open = parseInt(String(await psAsync(FW_ENABLE_SCRIPT, 30000)).trim(), 10) || 0; } catch (_) { open = 0; }
-    // 兜底：仅当整组规则都不存在（原厂 RDP 规则被误删）时才新建一条
-    if (!(open > 0)) {
-        const existing = await getRDPRulesAsync();
-        if (existing.length === 0) {
-            try { await psAsync("New-NetFirewallRule -DisplayName 'wry合金防护-兜底RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Group '@FirewallAPI.dll,-28752'", 30000); open = 1; } catch (_) {}
-        }
-    }
-    return { mutated: open, openCount: open };
+    // 权威：启动远程桌面服务（真正开放端口）
+    const running = await startRdpService();
+    _rdpServiceRunning = running;
+    // 尽力而为：在非 GPO 托管（防火墙可写）环境下恢复允许规则
+    if (fwWritable) { try { await psAsync(FW_ENABLE_SCRIPT, 30000); } catch (_) {} }
+    return { mutated: running ? 1 : 0, openCount: running ? 1 : 0 };
 }
 
 async function disableRDPRules() {
-    let open = 0;
-    try { open = parseInt(String(await psAsync(FW_DISABLE_SCRIPT, 30000)).trim(), 10) || 0; } catch (_) { open = 0; }
-    return { mutated: 0, openCount: open };
+    // 权威：停止远程桌面服务（真正关闭端口，正在进行的 RDP 会话会被断开）
+    const stopped = await stopRdpService();
+    _rdpServiceRunning = !stopped;
+    // 尽力而为：在非 GPO 托管环境下追加防火墙阻断规则（双重保险）
+    if (fwWritable) {
+        try { await psAsync(FW_DISABLE_SCRIPT, 30000); } catch (_) {}
+        try { await psAsync("New-NetFirewallRule -DisplayName 'wry合金防护-RDP-Block' -Direction Inbound -Action Block -Protocol TCP -LocalPort 3389 -Profile Any -ErrorAction SilentlyContinue", 30000); } catch (_) {}
+    }
+    return { mutated: stopped ? 1 : 0, openCount: stopped ? 0 : 1 };
 }
 
 // 清理测试/历史遗留的兜底规则：仅当原厂 RDP 规则（RemoteDesktop-*）仍存在时才移除，
@@ -790,6 +827,16 @@ try {
 try { ensureWebFirewallRule(); } catch (_) {}
 // 启动常驻 PowerShell 工作进程（持久 CIM 会话，防火墙查询/变更亚秒级；异常自动回退逐次 spawn）
 try { _startWorker(); } catch (_) {}
+// 探测防火墙规则是否可写：域 GPO 托管时所有规则变更都会被「拒绝访问」，此时跳过防火墙层操作，
+// 仅以 TermService 控制为准（避免每次关闭/攻击都产生无用的报错与耗时）。
+setTimeout(async () => {
+    try {
+        const probe = await psAsync("try { New-NetFirewallRule -DisplayName 'wry-probe-rw' -Direction Inbound -Action Allow -LocalPort 61337 -ErrorAction Stop; Remove-NetFirewallRule -DisplayName 'wry-probe-rw' -ErrorAction SilentlyContinue; 'OK' } catch { 'NO' }", 20000);
+        fwWritable = String(probe).includes('OK');
+    } catch (_) { fwWritable = false; }
+    if (!fwWritable) appLog('WARN', '检测到防火墙由 GPO 托管（规则不可写），已切换为「控制 TermService 服务」方式开关 RDP 端口');
+    cache.ts = 0; setTimeout(() => refreshStatusAsync(), 300);
+}, 1200);
 // 后台异步刷新（含 PowerShell 防火墙规则查询）
 setTimeout(refreshStatusAsync, 2000);
 setInterval(refreshStatusAsync, CACHE_INTERVAL);
@@ -896,9 +943,9 @@ const server = http.createServer((req, res) => {
                 // 清除可能存在的强制开启状态
                 try { fs.unlinkSync(FORCE_OPEN_FILE); } catch (_) {}
                 const closeMsg = closed > 0
-                    ? `RDP 端口已关闭（已禁用 ${closed} 条规则；本系统默认开放，重启服务后将自动重新开放，或点「强制开启」立即打开）`
-                    : `RDP 端口当前已处于关闭状态（重启服务后将自动重新开放，或点「强制开启」立即打开）`;
-                appLog('CLOSE', '用户手动关闭 RDP 端口（重启服务后默认自动重新开放）', { disabled: closed });
+                    ? `RDP 端口已关闭（已停止「远程桌面服务 TermService」，端口 3389 已停止监听、外部不可连接；本系统默认开放，重启服务或点「强制开启」将重新打开）`
+                    : `RDP 端口当前已处于关闭状态（远程桌面服务未运行）`;
+                appLog('CLOSE', '用户手动关闭 RDP 端口（已停止 TermService 服务）', { stopped: closed });
                 sendJson({ ok: true, closed, message: closeMsg });
                 cache.ts = 0; setTimeout(() => refreshStatusAsync(), 2000);
             } finally {

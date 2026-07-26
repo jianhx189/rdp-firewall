@@ -390,7 +390,7 @@ tr:hover td { background:rgba(0,240,255,.04); }
   <div class="tab-bar">
     <button class="tab-item active" onclick="switchTab('overview')">📊 概览</button>
     <button class="tab-item" onclick="switchTab('history')">📋 攻击历史</button>
-    <button class="tab-item" onclick="switchTab('rules')">🛡 防火墙规则</button>
+    <button class="tab-item" onclick="switchTab('rules')">🛡 RDP 状态</button>
     <button class="tab-item" onclick="switchTab('log')">📝 操作日志</button>
   </div>
 
@@ -423,7 +423,7 @@ tr:hover td { background:rgba(0,240,255,.04); }
   <!-- Panel: Rules -->
   <div class="panel-wrap" id="panel-rules">
     <div class="card">
-      <div class="card-header">🛡 RDP 防火墙规则</div>
+      <div class="card-header">🛡 RDP 服务状态</div>
       <div class="card-body" id="rules-body"></div>
     </div>
   </div>
@@ -446,7 +446,7 @@ tr:hover td { background:rgba(0,240,255,.04); }
   <div class="modal-box">
     <div class="icon" style="color:var(--cyan)">🚀</div>
     <h3>强制开启 RDP 端口</h3>
-    <div class="desc">启用所有 RDP 防火墙规则，开放端口 <strong>5 分钟</strong>。到期后若仍在遭攻击将重新封禁。</div>
+    <div class="desc">启动「远程桌面服务 (TermService)」，开放端口 <strong>5 分钟</strong>。到期后若仍在遭攻击将重新封禁。</div>
     <p class="warn" style="font-size:12px;margin-bottom:10px;">⚠️ 请确认是你本人操作</p>
     <label>输入密码确认身份</label>
     <input type="password" id="pwd-open" placeholder="输入后端密码" onkeydown="if(event.key==='Enter')doOpen()">
@@ -462,8 +462,8 @@ tr:hover td { background:rgba(0,240,255,.04); }
   <div class="modal-box">
     <div class="icon" style="color:var(--red)">⛔</div>
     <h3>关闭 RDP 端口</h3>
-    <div class="desc">禁用所有 RDP 防火墙规则，关闭远程桌面访问。</div>
-    <p class="warn" style="font-size:12px;margin-bottom:10px;">⚠️ 端口将保持关闭，直到你手动开启（不会自动恢复）</p>
+    <div class="desc">停止「远程桌面服务 (TermService)」，端口 3389 将<b>真正停止监听</b>、外部不可连接。</div>
+    <p class="warn" style="font-size:12px;margin-bottom:10px;">⚠️ 端口将保持关闭，直到你手动开启（不会自动恢复）。正在进行的远程桌面会话会被立即断开。</p>
     <label>输入密码确认身份</label>
     <input type="password" id="pwd-close" placeholder="输入后端密码" onkeydown="if(event.key==='Enter')doClose()">
     <div class="btns">
@@ -540,7 +540,7 @@ async function doClose() {
   try {
     const r = await apiPost('/api/close', {password:pwd});
     if (!r.ok) { toast(r.error||'操作失败','err'); return; }
-    toast(`RDP 已关闭（禁用 ${r.closed} 条规则）`,'ok');
+    toast(`RDP 端口已关闭（远程桌面服务已停止）`,'ok');
     refreshAll();
   } catch(e) { toast('网络错误','err'); }
 }
@@ -731,10 +731,12 @@ function renderHistory(h) {
 }
 
 function renderRules(s) {
+  const running = (s.openCount || 0) > 0;
+  const rows = [{ name: '远程桌面服务 (TermService · 端口 3389)', on: running }];
   let html = '';
-  for (let i=0; i<(s.openCount||0); i++) html += `<div class="rule-row"><span class="name">RDP 规则 #${i+1}</span><span class="on">✓ 启用</span></div>`;
-  for (let i=0; i<(s.closedCount||0); i++) html += `<div class="rule-row"><span class="name">RDP 规则 #${(s.openCount||0)+i+1}</span><span class="off">✕ 禁用</span></div>`;
-  if (!html) html = '<div class="empty-state">无法获取规则状态</div>';
+  for (const r of rows) {
+    html += `<div class="rule-row"><span class="name">${r.name}</span><span class="${r.on ? 'on' : 'off'}">${r.on ? '✓ 运行中（端口开放）' : '✕ 已停止（端口关闭）'}</span></div>`;
+  }
   $('rules-body').innerHTML = html;
 }
 
