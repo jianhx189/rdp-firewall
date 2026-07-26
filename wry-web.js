@@ -571,6 +571,11 @@ async function getHealth() {
         }
     } catch (_) {}
 
+    // 4. 域 GPO 托管防火墙：规则不可写，影响 WebUI 局域网访问与防火墙层防护
+    if (!fwWritable) {
+        warnings.push({ level: 'warning', msg: '防火墙由域 GPO 托管（规则不可写）：RDP 端口开关已自动改为「控制 TermService 服务」实现；但 WebUI 的局域网入站规则同样无法创建，局域网其他设备访问本页面需由域 GPO 放行 TCP ' + PORT + '。' });
+    }
+
     return { ok: warnings.length === 0, warnings };
 }
 
@@ -707,6 +712,12 @@ function quickInitCache() {
 
 // 确保 WebUI 自身可被局域网访问：创建一条入站允许规则（TCP 19888，仅专用/域网络）
 function ensureWebFirewallRule() {
+    if (!fwWritable) {
+        // 域 GPO 托管防火墙：本地新建规则会被「拒绝访问」，无法用本地规则放行 WebUI 端口。
+        // 此时局域网访问需由域 GPO 显式放行 TCP 19888，应用层无能为力，仅记录明确告警。
+        appLog('WARN', 'GPO 托管防火墙：无法创建 WebUI 入站规则，局域网访问需由域 GPO 放行 TCP ' + PORT + '（本机已监听 0.0.0.0:' + PORT + '，但入站连接可能被 GPO 拦截）');
+        return;
+    }
     try {
         const name = 'wry合金防护-WebUI';
         const out = psRaw(`Get-NetFirewallRule -DisplayName '${name}' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name`);
