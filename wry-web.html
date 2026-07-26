@@ -255,11 +255,21 @@ tr:hover td { background:rgba(0,240,255,.04); }
 .rule-row .off { color:var(--red); font-weight:700; }
 
 /* ===== 日志 ===== */
-.log-box { font-family:var(--mono); font-size:12px; background:#02040a; color:#9fe6b0; padding:14px; max-height:400px; overflow-y:auto; line-height:1.8; white-space:pre-wrap; word-break:break-all; }
-.log-box .danger  { color:#ff7b88; }
-.log-box .success { color:#7ee787; }
-.log-box .warning { color:#ffd479; }
-.log-box .info    { color:#79c0ff; }
+.log-box { background:#02040a; border:1px solid var(--border-lt); border-radius:var(--radius-sm); padding:8px 10px; max-height:440px; overflow-y:auto; }
+.log-empty { color:var(--text3); text-align:center; padding:24px 0; font-size:13px; }
+.log-item { display:grid; grid-template-columns:76px 72px 1fr; align-items:baseline; gap:10px; padding:7px 8px; border-bottom:1px solid rgba(255,255,255,.05); font-size:12.5px; line-height:1.5; }
+.log-item:last-child { border-bottom:none; }
+.log-time { font-family:var(--mono); color:var(--text3); font-size:11.5px; white-space:nowrap; }
+.log-badge { font-family:var(--mono); font-size:10.5px; font-weight:700; letter-spacing:.5px; text-align:center; padding:2px 0; border-radius:4px; white-space:nowrap; }
+.log-badge.danger  { color:#ff7b88; background:rgba(255,123,136,.12); border:1px solid rgba(255,123,136,.35); }
+.log-badge.warning { color:#ffd479; background:rgba(255,212,121,.12); border:1px solid rgba(255,212,121,.35); }
+.log-badge.success { color:#7ee787; background:rgba(126,231,135,.12); border:1px solid rgba(126,231,135,.35); }
+.log-badge.info    { color:#79c0ff; background:rgba(121,192,255,.12); border:1px solid rgba(121,192,255,.35); }
+.log-msg { color:var(--text); font-family:var(--mono); word-break:break-all; }
+.log-item.danger  .log-msg { color:#ffb3bb; }
+.log-item.success .log-msg { color:#a6f0ad; }
+.log-item.warning .log-msg { color:#ffe2a8; }
+.log-item.info    .log-msg { color:#bfe0ff; }
 
 /* ===== Modal ===== */
 .modal-mask { display:none; position:fixed; inset:0; background:rgba(2,4,10,.78); z-index:100; align-items:center; justify-content:center; backdrop-filter:blur(3px); }
@@ -729,11 +739,21 @@ function renderRules(s) {
 }
 
 function renderLog(logs) {
-  if (!logs.length) { $('log-view').innerHTML = '<div style="color:var(--text3);text-align:center;padding:20px">暂无日志</div>'; return; }
+  if (!logs || !logs.length) { $('log-view').innerHTML = '<div class="log-empty">暂无日志</div>'; return; }
   let html = '';
-  for (const l of logs) html += `<div class="${l.type||'info'}">${escapeHtml(l.text)}</div>`;
+  for (const l of logs) {
+    const lv  = escapeHtml(l.level || 'INFO');
+    const ts  = escapeHtml((l.ts || '').slice(11) || (l.ts || ''));   // 仅显示 HH:mm:ss
+    const msg = escapeHtml(l.msg || '');
+    const type = l.type || 'info';
+    html += `<div class="log-item ${type}">` +
+              `<span class="log-time">${ts}</span>` +
+              `<span class="log-badge ${type}">${lv}</span>` +
+              `<span class="log-msg">${msg}</span>` +
+            `</div>`;
+  }
   $('log-view').innerHTML = html;
-  $('log-view').scrollTop = $('log-view').scrollHeight;
+  $('log-view').scrollTop = 0; // 最新在最上方
 }
 
 function escapeHtml(s) {

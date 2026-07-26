@@ -428,16 +428,76 @@ function getForceOpen() {
     return { active: true, since: fo.since, until: fo.until, remainingMs: remaining };
 }
 
+// ============================================================================
+// 结构化操作日志（rdp_block.log）
+// ----------------------------------------------------------------------------
+// 旧版日志由已停用的 rdp-guard.js 写入：格式杂乱、行被粘连、且残留垃圾字节，
+// 可读性极差。现由本进程统一写入，规则如下：
+//   · 每行一条、结构固定、可解析；
+//   · 只记录“事件/状态变化”，绝不每个轮询都刷屏（消除旧版每分钟一条的噪声）；
+//   · 行格式： [YYYY-MM-DD HH:mm:ss] [LEVEL] 消息 | key=val,key=val
+//     LEVEL: INFO / WARN / BLOCK / RECOVER / OPEN / CLOSE / FORCE
+// ============================================================================
+const LOG_MAX_LINES = 500;
+
+function _logTs() {
+    try { return new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(0, 19); }
+    catch (_) { return new Date().toISOString().slice(0, 19).replace('T', ' '); }
+}
+
+// 记录一条结构化日志（仅用于离散事件，不在秒级热循环里调用）
+function appLog(level, msg, extra) {
+    try {
+        let line = `[${_logTs()}] [${level}] ${msg}`;
+        if (extra && typeof extra === 'object') {
+            const parts = [];
+            for (const [k, v] of Object.entries(extra)) {
+                if (v === undefined || v === null) continue;
+                parts.push(`${k}=${Array.isArray(v) ? v.join('/') : v}`);
+            }
+            if (parts.length) line += ' | ' + parts.join(', ');
+        }
+        line += '\n';
+        fs.appendFileSync(LOG_FILE, line, 'utf8');
+        // 轮转：超过上限仅保留最近 N 行，避免文件无限制膨胀
+        const lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n');
+        if (lines.length > LOG_MAX_LINES + 10) {
+            atomicWrite(LOG_FILE, lines.slice(-LOG_MAX_LINES).join('\n') + '\n');
+        }
+    } catch (_) {}
+}
+
+// 启动时清理旧版杂乱日志：只要文件里没有任何结构化标记，就清空并写一行升级说明，
+// 避免 WebUI 继续展示历史垃圾（真实攻击历史在 rdp_attack_history.json，不受影响）。
+function resetLegacyLog() {
+    try {
+        if (!fs.existsSync(LOG_FILE)) return;
+        const content = fs.readFileSync(LOG_FILE, 'utf8');
+        const structured = /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[[A-Z]+\] /.test(content);
+        if (!structured) {
+            fs.writeFileSync(LOG_FILE, `[${_logTs()}] [INFO] 日志系统已升级为结构化格式，旧版杂乱记录已清理\n`, 'utf8');
+        }
+    } catch (_) {}
+}
+
 function getRecentLogs() {
     try {
         const lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(l => l.trim());
-        return lines.slice(-50).reverse().map(l => {
+        const out = [];
+        for (const l of lines) {
+            // 仅解析结构化行；跳过任何遗留的乱行/垃圾字节
+            const m = l.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[([A-Z]+)\] (.+)$/);
+            if (!m) continue;
+            const [, ts, level, rest] = m;
             let type = 'info';
-            if (l.includes('触发防护') || l.includes('\uD83D\uDD12')) type = 'danger';
-            else if (l.includes('已恢复') || l.includes('\uD83D\uDD10') || l.includes('\uD83D\uDD13')) type = 'success';
-            else if (l.includes('\u26A0') || l.includes('LAN') || l.includes('强制开启')) type = 'warning';
-            return { text: l, type };
-        });
+            if (level === 'BLOCK') type = 'danger';
+            else if (level === 'WARN') type = 'warning';
+            else if (level === 'RECOVER' || level === 'OPEN') type = 'success';
+            else if (level === 'CLOSE' || level === 'FORCE') type = 'warning';
+            else type = 'info';
+            out.push({ ts, level, type, msg: rest });
+        }
+        return out.slice(-60).reverse(); // 最新在前
     } catch (_) { return []; }
 }
 
@@ -646,6 +706,7 @@ async function ensureDefaultOpen() {
             atomicWrite(STATE_FILE, JSON.stringify(st, null, 2));
         }
         if ((await openCountNow()) === 0) await enableRDPRules();
+        appLog('OPEN', '服务启动，已确保 RDP 端口默认开放');
     } catch (_) {}
 }
 
@@ -675,6 +736,7 @@ async function runGuardTick() {
                 await enableRDPRules();
                 state.blockedAt = null; state.closeReason = null; state.lastFailCount = 0;
                 atomicWrite(STATE_FILE, JSON.stringify(state, null, 2));
+                appLog('RECOVER', `攻击封禁已满 ${REOPEN_MINUTES} 分钟，RDP 端口已自动恢复开放`);
                 cache.ts = 0; setTimeout(() => refreshStatusAsync(), 400);
             }
             return; // 攻击封禁倒计时中，保持关闭
@@ -695,7 +757,7 @@ async function runGuardTick() {
         const { openCount: stillOpen } = await disableRDPRules();
         if (stillOpen > 0) {
             // 端口未真正关闭，不写 BLOCKED，下一轮继续重试
-            console.log('[WARN] 封禁失败：RDP 端口仍未关闭，下一轮重试');
+            appLog('WARN', '封禁失败：RDP 端口仍未关闭，下一轮重试');
             cache.ts = 0; setTimeout(() => refreshStatusAsync(), 200);
             return;
         }
@@ -706,7 +768,7 @@ async function runGuardTick() {
         st.lastFailCount = total;
         atomicWrite(STATE_FILE, JSON.stringify(st, null, 2));
         persistAttackWeb(total, ipCounts, userCounts, statusCounts);
-        console.log(`[BLOCK] 检测到暴力破解，已关闭 RDP 端口，攻击 IP: ${triggered.join(', ')}`);
+        appLog('BLOCK', '检测到暴力破解，已关闭 RDP 端口', { ips: triggered, fails: total });
         cache.ts = 0; setTimeout(() => refreshStatusAsync(), 200); // 立即刷新面板
     } catch (_) {
     } finally {
@@ -717,10 +779,12 @@ async function runGuardTick() {
 
 // 初始填充
 quickInitCache();
+// 启动时清理旧版杂乱日志（避免 WebUI 展示历史垃圾）
+try { resetLegacyLog(); } catch (_) {}
 // 启动时清理遗留的兜底规则（仅 SYSTEM 身份下能 Remove），保持规则列表干净
 try {
     const removed = cleanupFallbackRules();
-    if (removed > 0) console.log(`已清理 ${removed} 条遗留兜底规则`);
+    if (removed > 0) appLog('INFO', `已清理 ${removed} 条遗留兜底规则`);
 } catch (_) {}
 // 确保局域网可访问本面板
 try { ensureWebFirewallRule(); } catch (_) {}
@@ -792,6 +856,7 @@ const server = http.createServer((req, res) => {
                 }
                 const now = Date.now();
                 atomicWrite(FORCE_OPEN_FILE, JSON.stringify({ since: now, until: now + FORCE_OPEN_DURATION_MS }));
+                appLog('FORCE', '用户强制开启 RDP 端口', { restored, expiresMin: Math.round(FORCE_OPEN_DURATION_MS / 60000) });
                 let state = getState();
                 if (state.blockedAt) { state.blockedAt = null; state.closeReason = null; state.lastFailCount = 0; atomicWrite(STATE_FILE, JSON.stringify(state, null, 2)); }
                 sendJson({ ok: true, since: new Date(now).toLocaleString('zh-CN', { timeZone: TZ }), until: new Date(now + FORCE_OPEN_DURATION_MS).toLocaleString('zh-CN', { timeZone: TZ }), remainingMs: FORCE_OPEN_DURATION_MS, restored });
@@ -833,6 +898,7 @@ const server = http.createServer((req, res) => {
                 const closeMsg = closed > 0
                     ? `RDP 端口已关闭（已禁用 ${closed} 条规则；本系统默认开放，重启服务后将自动重新开放，或点「强制开启」立即打开）`
                     : `RDP 端口当前已处于关闭状态（重启服务后将自动重新开放，或点「强制开启」立即打开）`;
+                appLog('CLOSE', '用户手动关闭 RDP 端口（重启服务后默认自动重新开放）', { disabled: closed });
                 sendJson({ ok: true, closed, message: closeMsg });
                 cache.ts = 0; setTimeout(() => refreshStatusAsync(), 2000);
             } finally {
@@ -851,5 +917,6 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
+    appLog('INFO', `wry合金防护 Web 监控已启动（默认开放 RDP，检测到攻击即秒级关闭），监听 http://0.0.0.0:${PORT}`);
     console.log('\uD83D\uDEE1 wry\u5408\u91D1\u9632\u62A4 Web \u76D1\u63A7\u5DF2\u542F\u52A8: http://0.0.0.0:' + PORT + '（已开放局域网访问，仅状态可见，操作需密码）');
 });

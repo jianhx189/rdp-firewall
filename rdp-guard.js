@@ -66,7 +66,7 @@ function getDataDir() {
 const DATA_DIR = getDataDir();
 
 // 文件路径
-const LOG_FILE           = path.join(DATA_DIR, 'rdp_block.log');
+const LOG_FILE           = path.join(DATA_DIR, 'rdp_guard_legacy.log'); // 已停用；隔离到独立文件，避免污染 wry-web.js 的结构化日志
 const STATE_FILE         = path.join(DATA_DIR, 'rdp_guard_state.json');
 const LOCK_FILE          = path.join(DATA_DIR, 'rdp_guard.lock');
 const FORCE_OPEN_FILE    = path.join(DATA_DIR, 'rdp_force_open.json');
