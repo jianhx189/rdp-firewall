@@ -19,6 +19,10 @@
 //   3. 启用/禁用改为单会话内「执行变更 + 轮询直到规则真正提交」，消除 Enable/Disable 提交延迟造成的「假失败/假封禁」。
 //   4. 攻击检测循环复用后台刷新缓存的开放数，避免重复发起 CIM 查询；并加 guard 防重叠执行。
 //   5. 本机 IP 识别改用 Node 原生 os.networkInterfaces()（瞬时、免 PowerShell）。
+// v3.19 变更（2026-07-26）：新增「默认开放」规则——RDP 端口除攻击触发封禁外默认开放。
+//   进程启动时清除残留的「手动关闭」/「已过期攻击封禁」状态并确保 RDP 规则启用；
+//   攻击检测循环正常态下若无达阈值的攻击 IP 则始终确保端口开放（防御性自动恢复），
+//   仅在检测到暴力破解（同 IP 失败 ≥ THRESHOLD 次 / LOOKBACK 秒）时才关闭端口并倒计时自动恢复。
 
 const http = require('http');
 const fs = require('fs');
@@ -624,6 +628,27 @@ async function openCountNow() {
     return await getRDPOpenCountAsync();
 }
 
+// 默认开放规则：除「攻击封禁且仍在冷却期」外，RDP 端口默认开放。
+// 进程启动时调用一次——清除可能残留的「手动关闭」/「已过期攻击封禁」状态，
+// 并确保 RDP 入站规则处于启用状态，使端口默认开放（仅在攻击触发时才会关闭）。
+async function ensureDefaultOpen() {
+    try {
+        const st = getState();
+        const isActiveAttack = st.blockedAt && st.closeReason === 'attack' &&
+            ((Date.now() - new Date(st.blockedAt).getTime()) / 60000) < REOPEN_MINUTES;
+        if (isActiveAttack) {
+            // 攻击冷却期内：保持关闭，由攻击检测循环负责到时自动恢复
+            return;
+        }
+        // 默认开放：清除手动/过期封禁残留状态（手动关闭非默认姿态，重启即恢复开放）
+        if (st.blockedAt || st.closeReason) {
+            st.blockedAt = null; st.closeReason = null; st.lastFailCount = 0; st.blockedIPs = [];
+            atomicWrite(STATE_FILE, JSON.stringify(st, null, 2));
+        }
+        if ((await openCountNow()) === 0) await enableRDPRules();
+    } catch (_) {}
+}
+
 // 攻击检测 + 封禁 + 自动恢复主循环（常驻，秒级响应；全程 async，绝不阻塞事件循环）
 async function runGuardTick() {
     if (guardTickInProgress) return;   // 防止上一轮（含异步 CIM 查询）未完成时重叠执行
@@ -654,15 +679,18 @@ async function runGuardTick() {
             }
             return; // 攻击封禁倒计时中，保持关闭
         }
-        // 3) 正常态：检测攻击（异步，不阻塞事件循环）
+        // 3) 正常态：先确保「默认开放」，再检测攻击（异步，不阻塞事件循环）
+        // 默认开放：只要没有「已达阈值的攻击 IP」，端口就应保持开放（防御性自动恢复）
         const { total, ipCounts, userCounts, statusCounts } = await countRecentFailures(LOOKBACK);
-        if (total === 0) {
+        const triggered = total > 0
+            ? Object.entries(ipCounts).filter(([, c]) => c >= THRESHOLD).map(([ip]) => ip)
+            : [];
+        if (triggered.length === 0) {
+            // 无攻击触发：确保端口默认开放（即使被外部禁用也会自动恢复）
             if ((await openCountNow()) === 0) { await enableRDPRules(); cache.ts = 0; setTimeout(() => refreshStatusAsync(), 400); }
             return;
         }
         if ((await openCountNow()) === 0) return; // 端口已关闭，不重复处理
-        const triggered = Object.entries(ipCounts).filter(([, c]) => c >= THRESHOLD).map(([ip]) => ip);
-        if (triggered.length === 0) return;
         // —— 触发封禁：立即关闭端口（单会话内轮询校验，确保真关）——
         const { openCount: stillOpen } = await disableRDPRules();
         if (stillOpen > 0) {
@@ -704,6 +732,8 @@ setInterval(refreshStatusAsync, CACHE_INTERVAL);
 // 攻击检测守护循环：5 秒一轮，秒级响应（替代原计划任务分钟级延迟）
 setTimeout(runGuardTick, 3000);
 setInterval(runGuardTick, 5000);
+// 默认开放规则：启动即确保 RDP 端口开放（清除残留的手动/过期封禁状态，除非正处于攻击冷却期）
+setTimeout(ensureDefaultOpen, 2500);
 
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1:' + PORT);
@@ -801,8 +831,8 @@ const server = http.createServer((req, res) => {
                 // 清除可能存在的强制开启状态
                 try { fs.unlinkSync(FORCE_OPEN_FILE); } catch (_) {}
                 const closeMsg = closed > 0
-                    ? `RDP 端口已关闭（已禁用 ${closed} 条规则，不会自动恢复，需强制开启才能重新打开）`
-                    : `RDP 端口当前已处于关闭状态（不会自动恢复，需强制开启才能重新打开）`;
+                    ? `RDP 端口已关闭（已禁用 ${closed} 条规则；本系统默认开放，重启服务后将自动重新开放，或点「强制开启」立即打开）`
+                    : `RDP 端口当前已处于关闭状态（重启服务后将自动重新开放，或点「强制开启」立即打开）`;
                 sendJson({ ok: true, closed, message: closeMsg });
                 cache.ts = 0; setTimeout(() => refreshStatusAsync(), 2000);
             } finally {
